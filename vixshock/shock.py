@@ -14,12 +14,23 @@ shocks are read.
 
 Book file columns:  expiry (YYYY-MM-DD), strike, type (C/P), quantity
                     optional: forward          -- the future for that expiry; else the CM curve at that tenor
-                              vol (decimal)    -- the option's own implied vol, e.g. 1.27 for 127%
-                              premium          -- the option's market price; the implied vol is backed
-                                                  out of it (used when `vol` is blank)
-Positions with neither vol nor premium fall back to the ATM vol-of-vol curve,
-which understates far-out-of-the-money options.  Any such fallback is listed
-loudly in the output; supply a vol or premium for every position.
+                              premium          -- PREFERRED.  The option's market price (mid of the
+                                                  bid/ask where available).  The implied vol is backed
+                                                  out of it with this model's own forward, day-count,
+                                                  rate and Black-76, so the mark is exact by construction.
+                              vol (decimal)    -- the option's implied vol, e.g. 1.27 for 127%.  Used
+                                                  only when there is no premium, because an imported vol
+                                                  carries its producer's conventions: one struck against
+                                                  spot VIX rather than the future runs ~7 points high at
+                                                  90 days, a ~59% error in the price.
+
+Precedence is premium > vol > ATM curve.  If both a premium and a vol are given the
+premium wins, and a gap of more than 1 vol point between them is logged -- that gap
+usually means the supplied vol was struck under a different convention.
+
+Positions with neither fall back to the ATM vol-of-vol curve, which badly understates
+far-out-of-the-money options.  Every fallback is listed loudly in the output; supply a
+premium for every position if you can.
 """
 from __future__ import annotations
 
@@ -102,19 +113,46 @@ def reprice_book(book: pd.DataFrame, params: ResponseParams, vov_params: Respons
             b[col] = np.nan
     b["forward"] = b["forward"].fillna(pd.Series(vix_curve(b["tenor"]), index=b.index))
     Ty = b["tenor"] / 365.0
-    # vol source per position: given vol > backed out of premium > ATM curve (flagged)
-    b["vol_source"] = "book vol"
+    # Vol source per position, in order of preference:
+    #   1. premium  -- the observable.  Inverting it here guarantees the vol is consistent with
+    #                  THIS model's forward, day-count, rate and Black-76.  An imported vol carries
+    #                  whoever produced it's conventions; a vol struck off spot VIX rather than the
+    #                  future is ~7 points high at 90d, which is a ~59% error in the price.
+    #   2. vol      -- supplied directly.  Used when there is no premium.
+    #   3. ATM curve -- flagged loudly; understates far-out-of-the-money options.
+    b["vol_source"] = ""
+    b["vol_from_premium"] = np.nan
     for i in b.index:
-        if pd.isna(b.at[i, "vol"]) and pd.notna(b.at[i, "premium"]):
-            b.at[i, "vol"] = implied_vol(float(b.at[i, "premium"]), float(b.at[i, "forward"]), float(b.at[i, "strike"]),
-                                         float(Ty[i]), r, bool(b.at[i, "is_call"]))
-            b.at[i, "vol_source"] = "from premium" if np.isfinite(b.at[i, "vol"]) else "premium below intrinsic!"
-        elif pd.isna(b.at[i, "vol"]):
+        prem, given = b.at[i, "premium"], b.at[i, "vol"]
+        if pd.notna(prem):
+            v = implied_vol(float(prem), float(b.at[i, "forward"]), float(b.at[i, "strike"]),
+                            float(Ty[i]), r, bool(b.at[i, "is_call"]))
+            b.at[i, "vol_from_premium"] = v
+            if np.isfinite(v):
+                b.at[i, "vol"], b.at[i, "vol_source"] = v, "from premium"
+                continue
+            log.warning("position %s: premium %.4f is below intrinsic; falling back", i, float(prem))
+        if pd.notna(given):
+            b.at[i, "vol"], b.at[i, "vol_source"] = float(given), "book vol"
+        else:
             b.at[i, "vol"] = float(vov_curve(b.at[i, "tenor"]))
             b.at[i, "vol_source"] = "ATM curve (fallback)"
-    fallback = b.index[b["vol_source"] != "book vol"]
-    if len(fallback) and (b["vol_source"] == "book vol").any():
-        log.warning("book mixes supplied vols with fallbacks on %d position(s): %s", len(fallback), list(fallback))
+
+    # Both supplied?  The premium won.  A material gap means the supplied vol was struck under
+    # different conventions (most often against spot VIX instead of the future) -- worth knowing.
+    both = b.index[b["vol_from_premium"].notna() & b["premium"].notna()]
+    for i in both:
+        given = book["vol"].iloc[b.index.get_loc(i)] if "vol" in book else np.nan
+        if pd.notna(given) and abs(float(given) - b.at[i, "vol_from_premium"]) > 0.01:
+            log.warning("position %s: supplied vol %.1f%% vs %.1f%% implied by the premium (%.1f pts apart); "
+                        "using the premium", i, float(given) * 100,
+                        b.at[i, "vol_from_premium"] * 100,
+                        abs(float(given) - b.at[i, "vol_from_premium"]) * 100)
+    b = b.drop(columns=["vol_from_premium"])
+    fallback = b.index[b["vol_source"] == "ATM curve (fallback)"]
+    if len(fallback) and (b["vol_source"] != "ATM curve (fallback)").any():
+        log.warning("book mixes market-derived vols with ATM fallbacks on %d position(s): %s",
+                    len(fallback), list(fallback))
     b["base_price"] = black76(b["forward"], b["strike"], Ty, b["vol"], r, b["is_call"])
     out = []
     for s in shocks:

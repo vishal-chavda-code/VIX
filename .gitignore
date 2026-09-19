@@ -1,8 +1,19 @@
 # rebuilt on every run
 data/processed/
-output/
+output/*
 
 # data/bloomberg_historical/ IS committed: a one-time frozen load, documented in its README.
 
 __pycache__/
 *.pyc
+
+# output/ is ignored above, with deliberate exceptions.  Git will not re-include a
+# file whose parent directory is excluded, so each level is re-admitted in turn.
+!output/runs/
+output/runs/*
+!output/runs/README.md
+!output/runs/LATEST_CALIBRATION.txt
+!output/runs/*_calibrate/
+# Calibration runs are the record of which parameters were in force and when, so
+# they are committed.  Pricing runs (*_price) stay ignored: regenerable, and they
+# accumulate daily.

@@ -78,5 +78,8 @@ PARAM_RANGES_VOV = {
 RISK_FREE_RATE = 0.04
 DAILY_REFRESH = True      # try the public CBOE / Yahoo files each run (no key, no account). If the network is
                           # absent the run continues on data/daily_inputs/ + disk, so this is never a dependency.
+MAX_CALIBRATION_AGE_DAYS = 400   # price.py FAILS if the fitted parameters are older than this.  Policy is a
+                                 # YEARLY recalibration as a reviewed event (400 = a year plus slack for
+                                 # scheduling); recalibrate sooner on a trigger -- see README section 0b.
 MAX_DATA_AGE_DAYS = 7     # FAIL the run if the latest curve date is older than this (calendar days) when
                           # pricing as of today.  Raise it deliberately if the machine cannot refresh data.
