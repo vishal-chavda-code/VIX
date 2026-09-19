@@ -132,3 +132,65 @@ SPX −20% we assert the index falls 20% *and* the VIX front rises ~34 points, t
 with no dispersion. That is a single-factor assumption. It becomes load-bearing if the two
 books are meant to hedge each other — Feb 2018 is the counter-example, SPX −8% with VIX
 +17.5, which the VIX model underestimates at a ratio of 0.72.
+
+---
+
+## Why this is not simply public — and why it may still cost nothing
+
+Worth understanding before treating this as a procurement request.
+
+### Public
+
+- **The concept and qualitative shape.** Skew is textbook. That SPX puts trade above ATM,
+  that VIX calls do, that skew steepens in a selloff — none of it is proprietary.
+- **Today's raw chains.** Delayed quotes are widely available; CBOE publishes a fair amount.
+- **Aggregate indices.** VIX, VVIX and **SKEW** (CBOE's own SPX tail-skew index) are free
+  and daily, SKEW back to 1990.
+- **Academic datasets.** OptionMetrics IvyDB is the research standard — just not free
+  commercially.
+
+### What is actually being paid for
+
+1. **History.** Today's chain is cheap; ten years of *every* chain, captured daily,
+   stored and error-corrected, is a curated dataset. The product is warehousing, not
+   insight.
+2. **Cleaning — the underrated part.** Raw quotes are messy: stale marks on illiquid
+   strikes, crossed bid/ask, prices violating put-call parity, wide spreads where nothing
+   traded. Turning that into a usable surface means filtering and interpolating with a
+   defensible choice at every step. **The cleaning is the product.**
+3. **The surface fit.** Scattered strikes to a smooth, arbitrage-free surface needs a
+   model (SVI, SABR) and calibration.
+
+### Why free VIX futures but not free vol surfaces
+
+CBOE publishes VIX futures settlements free because they are **exchange settlement
+prices** — there is a regulatory obligation and an interest in transparency. Nothing
+settles against a cleaned historical vol surface, so no such obligation exists. That is
+the structural reason the VIX pipeline is vendor-free and an SPX one may not be.
+
+And skew behaviour is central to how vol desks make money, so the precise measurement is a
+competitive input. It is sold, not given away.
+
+### But the expensive part may already be in-house
+
+**This desk builds vol surfaces.** That is the costly piece, and it exists here. So the ask
+is not "buy a feed" but **"keep the output you are already producing."** One of three is
+true:
+
+| situation | what the ask becomes |
+|---|---|
+| history already stored | a query |
+| inputs stored, outputs not | a backfill: re-run the existing fitter over historical chains |
+| nothing stored | start saving today; the model improves over time |
+
+Establish which before assuming procurement is involved.
+
+### Free fallback, if it comes to that
+
+**CBOE's SKEW index** — free, daily, back to 1990. A single number summarising SPX tail
+skew. Far coarser than a surface, but the response of SKEW to SPX moves could be measured
+to give a first-order shift rule. Combined with VVIX, already in this repo, that supports a
+defensible first version while surface history is sorted out.
+
+Precedent: the VIX model itself ships with a free VVIX fallback for the vol-of-vol layer
+when the Bloomberg historical file is absent, and the cost is about 7%.
