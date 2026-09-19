@@ -14,7 +14,11 @@ Plain-language summary of the choices below:
     (k < 0, plateauing); the data picks the sign (K_BOUNDS).
 """
 TENORS = (30, 60, 90, 120)            # constant-maturity tenors, calendar days
-SHOCKS = (-0.20, -0.15, -0.10, -0.05, 0.05, 0.10, 0.15, 0.20)   # SPX return scenarios
+# SPX return scenarios.  The spec grid is +-5..20%; -30% and -40% are added because the book must
+# hold up in the ugliest markets seen (2020: -34% in 23 days; 2008: -40% in 49 days).  Beyond -20%
+# the model is extrapolating past its calibration envelope (which ends near -30%) -- see the
+# open question on starting-level dependence in QUESTIONS_FOR_QUANT.md.
+SHOCKS = tuple(x / 100 for x in range(-40, 0, 5)) + tuple(x / 100 for x in range(5, 45, 5))   # -40..+40 in 5% steps
 
 # --- constant-maturity construction (step 2)
 CM_SPOT_ANCHOR = True     # when the front contract has > T days left, anchor the near end at (0, spot VIX)
@@ -59,7 +63,8 @@ STRESS_MAX_UNDERSTATED = 2     # episodes per tenor the model may understate (kn
 STRESS_MIN_RATIO = 0.5         # no episode may be understated by more than half
 
 # --- vol-of-vol (step 6)
-VOV_SOURCE = "auto"       # "bloomberg" | "vvix" | "auto" (bloomberg if reachable else vvix)
+VOV_SOURCE = "auto"       # "historical" (frozen one-time file in data/bloomberg_historical/, NOT a live dependency)
+                          # | "vvix" (free CBOE file, 30d only) | "auto" (historical if the file exists, else vvix)
 # Set from the first full calibration (2026-09): gamma_0 1203, k -10.3, lam 0.18.  Units: vol points.
 PARAM_RANGES_VOV = {
     "beta_0": (400.0, 3000.0),
@@ -71,3 +76,7 @@ PARAM_RANGES_VOV = {
 
 # --- option repricing (step 7)
 RISK_FREE_RATE = 0.04
+DAILY_REFRESH = True      # try the public CBOE / Yahoo files each run (no key, no account). If the network is
+                          # absent the run continues on data/daily_inputs/ + disk, so this is never a dependency.
+MAX_DATA_AGE_DAYS = 7     # FAIL the run if the latest curve date is older than this (calendar days) when
+                          # pricing as of today.  Raise it deliberately if the machine cannot refresh data.

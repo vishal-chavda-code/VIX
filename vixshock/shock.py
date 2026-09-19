@@ -13,7 +13,13 @@ shock) unless days_forward > 0, which also moves the tenor at which the
 shocks are read.
 
 Book file columns:  expiry (YYYY-MM-DD), strike, type (C/P), quantity
-                    optional: forward, vol (decimal) -- book marks override the curve
+                    optional: forward          -- the future for that expiry; else the CM curve at that tenor
+                              vol (decimal)    -- the option's own implied vol, e.g. 1.27 for 127%
+                              premium          -- the option's market price; the implied vol is backed
+                                                  out of it (used when `vol` is blank)
+Positions with neither vol nor premium fall back to the ATM vol-of-vol curve,
+which understates far-out-of-the-money options.  Any such fallback is listed
+loudly in the output; supply a vol or premium for every position.
 """
 from __future__ import annotations
 
@@ -26,7 +32,7 @@ import pandas as pd
 import config
 from .cm import load_cm
 from .data_sources import ROOT, load_cboe_index
-from .pricing import black76
+from .pricing import black76, implied_vol
 from .response import ResponseParams, load_params
 
 log = logging.getLogger(__name__)
@@ -48,6 +54,14 @@ class Curve:
     def __call__(self, T):
         # linear between points, flat beyond the last
         return np.interp(np.asarray(T, dtype=float), self.x, self.y)
+
+
+def data_age_days(asof: pd.Timestamp | None = None) -> tuple[pd.Timestamp, int]:
+    """Last date in the CM curve and how many calendar days old it is."""
+    cm = load_cm()
+    last = cm.index.max()
+    ref = pd.Timestamp(asof) if asof is not None else pd.Timestamp.today().normalize()
+    return last, int((ref - last).days)
 
 
 def latest_curves(asof: pd.Timestamp | None = None):
@@ -83,11 +97,24 @@ def reprice_book(book: pd.DataFrame, params: ResponseParams, vov_params: Respons
         raise ValueError("book contains options expiring on or before the evaluation date")
     b["tenor"] = b["dte"] - days_forward
     b["is_call"] = b["type"].str.upper().str.startswith("C")
-    if "forward" not in b or b["forward"].isna().any():
-        b["forward"] = b.get("forward", pd.Series(np.nan, index=b.index)).fillna(pd.Series(vix_curve(b["tenor"]), index=b.index))
-    if "vol" not in b or b["vol"].isna().any():
-        b["vol"] = b.get("vol", pd.Series(np.nan, index=b.index)).fillna(pd.Series(vov_curve(b["tenor"]), index=b.index))
+    for col in ("forward", "vol", "premium"):
+        if col not in b:
+            b[col] = np.nan
+    b["forward"] = b["forward"].fillna(pd.Series(vix_curve(b["tenor"]), index=b.index))
     Ty = b["tenor"] / 365.0
+    # vol source per position: given vol > backed out of premium > ATM curve (flagged)
+    b["vol_source"] = "book vol"
+    for i in b.index:
+        if pd.isna(b.at[i, "vol"]) and pd.notna(b.at[i, "premium"]):
+            b.at[i, "vol"] = implied_vol(float(b.at[i, "premium"]), float(b.at[i, "forward"]), float(b.at[i, "strike"]),
+                                         float(Ty[i]), r, bool(b.at[i, "is_call"]))
+            b.at[i, "vol_source"] = "from premium" if np.isfinite(b.at[i, "vol"]) else "premium below intrinsic!"
+        elif pd.isna(b.at[i, "vol"]):
+            b.at[i, "vol"] = float(vov_curve(b.at[i, "tenor"]))
+            b.at[i, "vol_source"] = "ATM curve (fallback)"
+    fallback = b.index[b["vol_source"] != "book vol"]
+    if len(fallback) and (b["vol_source"] == "book vol").any():
+        log.warning("book mixes supplied vols with fallbacks on %d position(s): %s", len(fallback), list(fallback))
     b["base_price"] = black76(b["forward"], b["strike"], Ty, b["vol"], r, b["is_call"])
     out = []
     for s in shocks:
@@ -102,7 +129,7 @@ def reprice_book(book: pd.DataFrame, params: ResponseParams, vov_params: Respons
                         "strike": b.at[i, "strike"], "type": "C" if b.at[i, "is_call"] else "P",
                         "qty": b.at[i, "quantity"], "tenor": b.at[i, "tenor"],
                         "fwd": b.at[i, "forward"], "fwd_shocked": float(F1[i]),
-                        "vol": b.at[i, "vol"], "vol_shocked": float(v1[i]),
+                        "vol": b.at[i, "vol"], "vol_source": b.at[i, "vol_source"], "vol_shocked": float(v1[i]),
                         "base_price": float(b.at[i, "base_price"]),
                         "price_vol_fixed": float(p_fixed[i]), "price_vol_shocked": float(p_full[i]),
                         "pnl_vol_fixed": float((p_fixed[i] - b.at[i, "base_price"]) * b.at[i, "quantity"]),

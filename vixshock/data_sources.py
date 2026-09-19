@@ -1,4 +1,15 @@
-"""Download raw inputs.  Everything lands in data/raw/ and is never modified.
+"""Raw inputs.
+
+Two kinds, kept apart on purpose:
+
+  data/raw/            the HISTORY, loaded once by bootstrap_history.py (needs internet;
+                       build machine only) and then frozen.  Never touched by run.py.
+  data/daily_inputs/   what the DAILY run reads on top of the history: three plain CSVs
+                       maintained by you or your market-data feed.  No API, no network.
+                       See data/daily_inputs/README.md for the formats.
+
+run.py imports only the load_* functions below; the download_* functions are
+bootstrap-only.
 
 Sources
 -------
@@ -9,8 +20,8 @@ VIX futures   CFE.  Two URL layouts:
               with zero settles, so the archive is used through Dec-2013.
 SPX           Yahoo (^GSPC) via yfinance, cached to CSV.
 VIX spot      cdn.cboe.com VIX_History.csv  (validation of CM-30 only).
-VVIX          cdn.cboe.com VVIX_History.csv (free vol-of-vol proxy; Bloomberg
-              is the production source, see bloomberg.py).
+VVIX          cdn.cboe.com VVIX_History.csv (free 30-day vol-of-vol; used as the
+              fallback when data/bloomberg_historical/ is absent).
 """
 from __future__ import annotations
 
@@ -152,18 +163,89 @@ def download_spx(force: bool = False, start: str = "2003-01-01") -> Path:
     return path
 
 
+DAILY = ROOT / "data" / "daily_inputs"
+
+
+def _daily_series(name: str) -> pd.Series | None:
+    """date,close from data/daily_inputs/<name>.csv, or None if absent/empty."""
+    path = DAILY / f"{name}.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    if df.empty or "date" not in df or "close" not in df:
+        return None
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date")["close"].astype(float).sort_index()
+
+
+def _overlay(hist: pd.Series, daily: pd.Series | None) -> pd.Series:
+    """History with daily rows appended; on a shared date the daily value wins."""
+    if daily is None or daily.empty:
+        return hist
+    return pd.concat([hist[~hist.index.isin(daily.index)], daily]).sort_index()
+
+
 def load_spx() -> pd.Series:
-    df = pd.read_csv(RAW / "spx.csv", parse_dates=["date"]).set_index("date")["close"]
-    return df.sort_index()
+    hist = pd.read_csv(RAW / "spx.csv", parse_dates=["date"]).set_index("date")["close"].sort_index()
+    return _overlay(hist, _daily_series("spx")).rename("close")
 
 
 def load_cboe_index(name: str) -> pd.Series:
-    """VIX_History.csv / VVIX_History.csv -> Series of daily closes."""
+    """Spot VIX ('vix') or VVIX ('vvix'): history from the CBOE file, overlaid
+    with data/daily_inputs/vix_spot.csv or vvix.csv when present."""
     df = pd.read_csv(RAW / f"{name}.csv")
     df.columns = [c.strip().upper() for c in df.columns]
     df["DATE"] = pd.to_datetime(df["DATE"])
     col = "CLOSE" if "CLOSE" in df.columns else [c for c in df.columns if c != "DATE"][0]
-    return df.set_index("DATE")[col].astype(float).sort_index().rename(name.lower())
+    hist = df.set_index("DATE")[col].astype(float).sort_index()
+    hist.index.name = "date"
+    daily = _daily_series("vix_spot" if name == "vix" else name)
+    return _overlay(hist, daily).rename(name.lower())
+
+
+def load_daily_vx() -> pd.DataFrame | None:
+    """Daily VIX futures settlements from data/daily_inputs/vx_settlements.csv,
+    normalised to the long-table columns, or None if absent/empty."""
+    path = DAILY / "vx_settlements.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    need = {"date", "contract_expiry", "settle"}
+    if df.empty or not need.issubset(df.columns):
+        return None
+    df["date"] = pd.to_datetime(df["date"])
+    df["contract_expiry"] = pd.to_datetime(df["contract_expiry"])
+    for c in ("settle", "volume", "open_interest", "close"):
+        df[c] = pd.to_numeric(df[c], errors="coerce") if c in df else float("nan")
+    df["close"] = df["close"].fillna(df["settle"])
+    df["source"] = "daily_inputs"
+    return df[["date", "contract_expiry", "settle", "close", "volume", "open_interest", "source"]]
+
+
+def refresh_daily() -> dict:
+    """OPTIONAL daily network pull (config.DAILY_REFRESH): every unexpired contract
+    file (expired ones never change), spot VIX, VVIX and SPX.  No key, no email,
+    no account: plain HTTPS to cdn.cboe.com and Yahoo.  Raises on any failure so
+    the caller can fall back to data/daily_inputs/."""
+    import datetime as _dt
+    today = _dt.date.today()
+    n = 0
+    for path in sorted(VX_DIR.glob("VX_*.csv")):
+        exp = _dt.date.fromisoformat(path.stem[3:])
+        if exp >= today - _dt.timedelta(days=1):
+            r = _get(MODERN_URL.format(expiry=exp))
+            if r is None:
+                raise RuntimeError(f"could not fetch {path.name}")
+            path.write_bytes(r.content)
+            n += 1
+    download_vx_modern(first_year=today.year, force=False)      # newly listed contracts
+    download_cboe_index(VIX_URL, "vix", force=True)
+    download_cboe_index(VVIX_URL, "vvix", force=True)
+    download_spx(force=True)
+    return {"contract_files_refreshed": n, "latest_spx": str(load_spx().index.max().date()),
+            "latest_vix": str(load_cboe_index("vix").index.max().date())}
 
 
 def download_everything(force: bool = False) -> None:

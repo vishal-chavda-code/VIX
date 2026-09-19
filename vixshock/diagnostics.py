@@ -155,13 +155,26 @@ def full_report(book: pd.DataFrame | None = None, asof=None, days_forward: int =
 
         # ---------------- step 7
         print(section("7. SHOCK GRID AND BOOK REPRICING"))
+        last, age = shock.data_age_days(asof)
+        gates["data_fresh"] = asof is not None or age <= config.MAX_DATA_AGE_DAYS
+        print(f"  latest curve date {last.date()}, {age} days old   GATE data_fresh: "
+              f"{'PASS' if gates['data_fresh'] else 'FAIL'}  (limit {config.MAX_DATA_AGE_DAYS} days"
+              f"{'; historical --asof, not checked' if asof is not None else ''})")
         asof_, spot_v, curves, det, summary = shock.run(book, asof, days_forward)
         print(f"  as of {asof_.date()}   spot VIX {spot_v:.2f}   days forward {days_forward}")
         print("\n  shocked CM VIX curve:")
         print(curves.to_string())
-        base = det[det["scenario"] == det["scenario"].iloc[0]][["expiry", "strike", "type", "qty", "tenor", "fwd", "vol", "base_price"]]
+        floored = int((curves.iloc[1:] <= shock.VIX_FLOOR).sum().sum())
+        if floored:
+            print(f"  note: {floored} cell(s) hit the VIX_FLOOR of {shock.VIX_FLOOR} (linear up-branch extrapolated below "
+                  f"any level VIX futures have traded)")
+        base = det[det["scenario"] == det["scenario"].iloc[0]][["expiry", "strike", "type", "qty", "tenor", "fwd", "vol", "vol_source", "base_price"]]
         print(f"\n  book ({'supplied' if book is not None else 'EXAMPLE -- supply the real book'}):")
         print(base.round(3).to_string(index=False))
+        nfb = int(base["vol_source"].str.contains("fallback|intrinsic").sum())
+        if nfb:
+            warnings.append(f"!!! {nfb} of {len(base)} positions priced without their own vol/premium "
+                            f"(see vol_source); far-out-of-the-money options are understated")
         print("\n  book P&L by scenario; vol_of_vol_effect is what holding implied vol fixed would have missed:")
         print(summary.to_string())
 

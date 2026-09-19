@@ -2,9 +2,7 @@
 data/processed/
 output/
 
-# Bloomberg-sourced data: licensed to the terminal user, not for redistribution.
-# Re-create on a machine with a terminal via `python run.py --refresh`.
-data/raw/bbg_vix_impvol.csv
+# data/bloomberg_historical/ IS committed: a one-time frozen load, documented in its README.
 
 __pycache__/
 *.pyc

@@ -4,14 +4,36 @@ One question: **if SPX moves by X%, where does the VIX futures curve go, and wha
 my VIX options worth then?**  Output feeds a portfolio risk measure.
 
 ```
-python run.py                      # full pipeline + diagnostics, exit 0 only if every gate passes
-python run.py --book book.csv      # reprice a real book  (columns: expiry, strike, type, quantity[, forward, vol])
-python run.py --refresh            # re-download everything first
+python run.py --book book.csv      # the DAILY run: today's data + recalibrate + validate + price the book
 python run.py --asof 2020-03-16    # curves as of a historical date
+python bootstrap_history.py        # ONE-TIME on a machine with internet: loads the 2004-now history
 ```
 
 Every run prints the full diagnostics report and writes it to `output/report_<time>.txt`.
-Read section 8 (VERDICT) first.
+Read section 8 (VERDICT) first. Exit code 0 only if every gate passed.
+Open questions for the reviewer are in `QUESTIONS_FOR_QUANT.md`.
+
+## 0. Running it daily — where the data comes from
+
+| | source | needs |
+|---|---|---|
+| History 2004 → now | `data/raw/`, loaded once by `bootstrap_history.py`, then frozen | internet once (build machine) |
+| Today's rows, option A | CBOE public files + Yahoo SPX, pulled by `run.py` if `config.DAILY_REFRESH` and the network is there | **nothing** — no key, no account, no email; plain HTTPS |
+| Today's rows, option B | `data/daily_inputs/` — three CSVs (VIX futures settles, SPX close, spot VIX) you or your feed maintain | nothing; see the README in that folder |
+| Vol-of-vol calibration | `data/bloomberg_historical/` — one frozen file, pulled once; **not a dependency**, see the README there | nothing; delete it and the run falls back to free VVIX |
+| Book | your CSV: `expiry, strike, type, quantity` + `vol` or `premium` per option | market vols or premiums from the desk |
+
+Neither option A nor B is a *dependency*: with no network the run continues on B and the
+disk; with nothing new at all the `data_fresh` gate **fails** once the curve is older than
+`config.MAX_DATA_AGE_DAYS` (7). A run that fails is the intended behaviour on stale data.
+
+Book file: give every position its own `vol` (decimal, 1.27 = 127%) or `premium` (the
+implied vol is backed out of it). Positions with neither fall back to the ATM curve and are
+listed in the report — that fallback marks far-out-of-the-money calls near zero, so do not
+ship a run with fallbacks on the real book.
+
+Scenario grid: SPX −40% to +40% in 5% steps (`config.SHOCKS`). Beyond −30% the model is
+extrapolating past anything observed; see Q4 in `QUESTIONS_FOR_QUANT.md`.
 
 ---
 
@@ -137,7 +159,7 @@ no ratio below `STRESS_MIN_RATIO = 0.5`; it fails loudly otherwise.
 | VIX futures 2013–now | `cdn.cboe.com/data/us/futures/market_statistics/historical_data/VX/VX_<expiry>.csv` | the 2013 files here are truncated with zero settles, so the archive is used through Dec-2013; expiry probed ±3 days around the rule for Good-Friday months |
 | SPX | Yahoo `^GSPC` via yfinance (build machine) | on the work machine drop a `date,close` CSV at `data/raw/spx.csv` |
 | spot VIX, VVIX | `cdn.cboe.com/api/global/us_indices/daily_prices/` | spot for the CM-30 validation and near-end anchor |
-| VIX-option implied vol by tenor | Bloomberg: `VVIX Index` (30d), `VIX Index` `CALL_IMP_VOL_60D`, `3MO_CALL_IMP_VOL`, `6MO_CALL_IMP_VOL` | cached to `data/raw/bbg_vix_impvol.csv`; the `*_IMPVOL_100%MNY` and `CALL_IMP_VOL_30D` fields are unusable for VIX (moneyness measured against spot, not the future) — see `bloomberg.py` |
+| VIX-option implied vol by tenor | one-time Bloomberg pull, frozen in `data/bloomberg_historical/` (README there lists the fields) | **not a dependency**; without the file the layer uses free VVIX (30d) with the tenor fade assumed |
 
 Monthly contracts only (weeklies exist from 2015 but not before, and are thin);
 273 contract files, 47k contract-days, 2004-03-26 → today.  Only 3–4 contracts
@@ -180,11 +202,11 @@ always reaches at least 147 days so the 120-day point never has a gap.
 
 ## 7. Shipping to the work machine
 
-The build is iterative; shipping is one-shot.  Carry the whole `vix_shock/`
-folder including `data/raw/` (the CFE files, `spx.csv`, `vix.csv`, `vvix.csv`,
-`bbg_vix_impvol.csv`).  With those present, `python run.py` needs no network
-and no terminal.  `--refresh` re-pulls everything; Bloomberg refresh silently
-keeps the cache if no terminal answers on 8194.
+The build is iterative; shipping is one-shot.  Carry the whole folder
+including `data/raw/` (the CFE files, `spx.csv`, `vix.csv`, `vvix.csv`) and
+`data/bloomberg_historical/`.  With those present, `python run.py` needs no
+network and no terminal; daily rows come from the public CBOE files when the
+network is there, else from `data/daily_inputs/`.
 
 Checklist before the handoff review:
 
@@ -197,24 +219,26 @@ Checklist before the handoff review:
 - [ ] the real book runs through `--book` and the vol-of-vol effect column is non-trivial
 
 Dependencies: pandas, numpy, scipy, matplotlib, requests.  `yfinance` only for
-the SPX pull on the build machine; `blpapi` only for a Bloomberg refresh.
+the SPX pull (bootstrap and optional daily refresh); nothing Bloomberg.
 
 ## 8. Layout
 
 ```
-run.py                  entry point, writes output/report_<time>.txt, exit code = gates
+run.py                  the daily entry point, writes output/report_<time>.txt, exit code = gates
+bootstrap_history.py    one-time history download (internet), never called by run.py
 config.py               every named parameter, sane ranges, gate thresholds
+QUESTIONS_FOR_QUANT.md  open decisions for the reviewer, with the numbers that raised them
 vixshock/
-  data_sources.py       downloads (CFE two layouts, SPX, spot VIX, VVIX)
+  data_sources.py       history loaders + daily_inputs overlay; downloads (bootstrap / optional refresh)
   ingest.py             step 1  contract files -> long table; ×10 rescale, placeholders, stale flag
   cm.py                 step 2  constant-maturity stitch; liquidity / stale / anchor / gap flags; spot validation
   join.py               step 3  SPX returns ⨝ CM changes; single-horizon and pooled 1-20d datasets
   response.py           step 4  the response function, envelope fit, per-tenor and joint fits, plots
   stress.py             step 5  stress-episode table
-  bloomberg.py          blpapi adapter, cached
-  volofvol.py           step 6  vol-of-vol fit (same machinery, k < 0 allowed)
+  volofvol.py           step 6  vol-of-vol fit (same machinery, k < 0 allowed); reads data/bloomberg_historical/ or VVIX
   pricing.py            Black-76
   shock.py              step 7  shock grid, continuous curve, book repricing
   diagnostics.py        step 8  the report and the gates
-data/raw                never modified      data/processed   rebuilt every run      output/   report, params, plots
+data/raw                frozen history      data/daily_inputs   today's rows (local CSVs)     data/bloomberg_historical   frozen one-time file
+data/processed          rebuilt every run   output/             report, params, plots
 ```

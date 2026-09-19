@@ -1,7 +1,11 @@
 """Run the whole pipeline with diagnostics.
 
-    python run.py                      # from cached raw data (downloads on first run)
-    python run.py --refresh            # re-download CFE / SPX / VIX / VVIX / Bloomberg first
+    python run.py                      # DAILY.  History in data/raw/ + today's rows.  Today's rows come from
+                                       # the CBOE/Yahoo public files if config.DAILY_REFRESH and the network is
+                                       # there (no key, no account), else from data/daily_inputs/ (local CSVs).
+                                       # Recalibrates, validates, prices the book.  FAILS if the curve is older
+                                       # than config.MAX_DATA_AGE_DAYS.
+    python bootstrap_history.py        # ONE-TIME, build machine only: downloads the 2004-now history.
     python run.py --book my_book.csv   # reprice a real book (columns: expiry, strike, type, quantity[, forward, vol])
     python run.py --asof 2020-03-16    # evaluate the curves as of a historical date
     python run.py --days-forward 5     # shocks read at tenor - 5 days, options aged 5 days
@@ -24,22 +28,22 @@ from vixshock import data_sources, diagnostics
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--refresh", action="store_true", help="re-download all raw data")
     ap.add_argument("--book", type=str, default=None)
     ap.add_argument("--asof", type=str, default=None)
     ap.add_argument("--days-forward", type=int, default=0)
     args = ap.parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-    if args.refresh:
-        data_sources.download_everything(force=True)
+    if not data_sources.VX_DIR.exists() or not any(data_sources.VX_DIR.glob("*.csv")):
+        sys.exit("no history in data/raw/ -- run bootstrap_history.py once on a machine with internet, "
+                 "or copy the data/ folder from one that has")
+    import config
+    if config.DAILY_REFRESH:
         try:
-            from vixshock import bloomberg
-            bloomberg.download_vix_impvol(force=True)
-        except Exception as e:  # no terminal on this machine: keep the cached file
-            print(f"Bloomberg refresh skipped: {e}")
-    elif not data_sources.VX_DIR.exists() or not any(data_sources.VX_DIR.glob("*.csv")):
-        data_sources.download_everything()
+            print("daily network refresh:", data_sources.refresh_daily())
+        except Exception as e:
+            print(f"daily network refresh unavailable ({type(e).__name__}: {e}) -- using data/daily_inputs/ "
+                  f"and the data on disk; the data_fresh gate applies")
 
     book = pd.read_csv(args.book) if args.book else None
     text, ok = diagnostics.full_report(book, args.asof, args.days_forward)

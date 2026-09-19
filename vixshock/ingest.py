@@ -84,6 +84,16 @@ def build_long_table(vx_dir: Path = VX_DIR) -> tuple[pd.DataFrame, dict]:
         frames.append(df)
 
     long = pd.concat(frames, ignore_index=True)
+
+    # daily inputs (local files, no network) sit on top of the history; on a
+    # shared (date, expiry) the daily row wins
+    from .data_sources import load_daily_vx
+    daily = load_daily_vx()
+    report["rows_daily_inputs"] = 0 if daily is None else int(len(daily))
+    if daily is not None and len(daily):
+        key = ["date", "contract_expiry"]
+        marked = long.merge(daily[key].assign(_d=1), on=key, how="left")
+        long = pd.concat([marked[marked["_d"].isna()].drop(columns="_d"), daily], ignore_index=True)
     long["days_to_expiry"] = (long["contract_expiry"] - long["date"]).dt.days
     long = long[long["days_to_expiry"] >= 0]
     dup = long.duplicated(["date", "contract_expiry"], keep="first")
