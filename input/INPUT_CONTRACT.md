@@ -54,6 +54,60 @@ See `book_TEMPLATE.csv` in this folder.
 
 ## 2. The rules that matter
 
+### 2.-1 DATE FORMAT — use `YYYY-MM-DD`, and only that
+
+**This is the easiest way to get a silently wrong answer, so it comes first.**
+
+Write every `expiry` as **`YYYY-MM-DD`** — e.g. `2026-11-18`. Nothing else is safe.
+
+#### Why it matters
+
+The loader hands the column to pandas, which *guesses* the format. Tested behaviour:
+
+| you write | parsed as | safe? |
+|---|---|---|
+| `2026-11-18` | 2026-11-18 | **YES — use this** |
+| `2026-11-18 00:00:00` | 2026-11-18 | yes, but pointless |
+| `18-Nov-2026` | 2026-11-18 | works, but avoid |
+| `11/18/2026` | 2026-11-18 | works *because 18 cannot be a month* |
+| `18/11/2026` | 2026-11-18 | works *because 18 cannot be a month* |
+| **`01/02/2027`** | **2027-01-02** | **NO — ambiguous, see below** |
+| `20261118` | parsed as a huge number, then rejected | no |
+| `46345` (Excel serial) | not a date | no |
+
+#### The trap
+
+When both numbers are 12 or under, pandas assumes **US order, month first**:
+
+```
+01/02/2027  ->  2 January 2027      (pandas)
+01/02/2027  ->  1 February 2027     (what a UK/European feed means)
+```
+
+That is a **one-month tenor error**, and nothing in the run flags it. The option is
+priced off the wrong point of the curve and gets the wrong shock.
+
+It gets worse — the guess can change *within a single file*, depending on other rows:
+
+```
+column [01/02/2027, 02/13/2027]  ->  [2027-01-02, 2027-02-13]   month-first
+column [01/02/2027, 13/02/2027]  ->  [2027-01-02, NaT       ]   13 is not a month
+```
+
+The **same first value** parses differently depending on what else is in the column.
+
+#### What to do
+
+- Emit ISO `YYYY-MM-DD`. If your tool is Excel, format the column as text first —
+  Excel will otherwise re-render dates in the machine's locale on save.
+- **Verify after writing the file**, not before. Open the CSV in a text editor and look
+  at the raw characters.
+- Spot-check the `tenor` column in the run output: it is days to expiry. If a position
+  you believe is ~60 days out shows 30 or 90, the date parsed wrong.
+
+VIX options expire on a **Wednesday** — 30 days before the third Friday of the following
+month. If a parsed expiry is not a Wednesday, something is wrong.
+
 ### 2.0 What to put in `vol` if you do not have it (or do not want to use it)
 
 **Leave it empty.** That is the recommended case, not a degraded one.

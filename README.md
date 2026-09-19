@@ -5,13 +5,15 @@ my VIX options worth then?**  Output feeds a portfolio risk measure.
 
 ```
 python price.py --book input/book_2026-09-21.csv   # the DAILY run: price a book (~1s)
-python run.py --book book.csv      # YEARLY: recalibrate + full validation + price
+python run.py --book input/book_2026-09-21.csv      # YEARLY: recalibrate + full validation
 python run.py --asof 2020-03-16    # curves as of a historical date
 python bootstrap_history.py        # ONE-TIME on a machine with internet: loads the 2004-now history
 ```
 
 `run.py` prints the full diagnostics report to `output/report_<time>.txt`; read section 8 (VERDICT)
-first. `price.py` writes a shorter `output/pricing_<time>.txt`. Exit code 0 only if every gate passed.
+first. Both entry points also write a self-contained `output/runs/<run-id>/` folder with a
+`manifest.json` recording which calibration and market data produced the numbers. Exit code 0
+only if every gate passed.
 Open questions for the reviewer are in `QUESTIONS_FOR_QUANT.md`.
 
 ## 0. Where the data comes from

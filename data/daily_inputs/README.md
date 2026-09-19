@@ -10,6 +10,57 @@ these files are then only needed for anything the pull could not get. If there
 is no internet, these files are the only source of today's data, and the run
 **fails** once the curve is older than `config.MAX_DATA_AGE_DAYS`.
 
+## ⚠️ DATE FORMAT — `YYYY-MM-DD` in every file, every date column
+
+**Read this before writing any of the files below.** It is the easiest way to get a
+silently wrong answer.
+
+Every date in every file here must be **`YYYY-MM-DD`** — e.g. `2026-11-18`. That means
+both the `date` column *and* `contract_expiry` in `vx_settlements.csv`.
+
+### Why
+
+These columns are handed to pandas, which **guesses** the format. When both numbers are
+12 or under it assumes US order, month first:
+
+```
+01/02/2027  ->  2 January 2027      (what pandas reads)
+01/02/2027  ->  1 February 2027     (what a UK/European feed means)
+```
+
+For `contract_expiry` that is a **one-month error in the tenor** of every position priced
+off that contract — the wrong point on the curve, the wrong shock, no warning.
+
+The guess can even change *within one column*, depending on the other rows:
+
+```
+[01/02/2027, 02/13/2027]  ->  [2027-01-02, 2027-02-13]   month-first
+[01/02/2027, 13/02/2027]  ->  [2027-01-02, NaT       ]   13 cannot be a month
+```
+
+Same first value, different result.
+
+### Safe and unsafe
+
+| format | result |
+|---|---|
+| `2026-11-18` | **correct — use this** |
+| `18-Nov-2026` | parses, but do not rely on it |
+| `11/18/2026`, `18/11/2026` | parse only because 18 cannot be a month |
+| **`01/02/2027`** | **ambiguous — silently wrong half the time** |
+| `20261118` | rejected |
+| `46345` (Excel serial) | rejected |
+
+### Check after writing
+
+- Open the CSV in a **text editor**, not Excel — Excel re-renders dates in the machine's
+  locale on save, so what you see there is not what is in the file.
+- A VIX `contract_expiry` is always a **Wednesday**. If one is not, the parse is wrong.
+- After a run, check the `as of` date and the `tenor` column in the output. A position you
+  believe is ~60 days out showing 30 or 90 means a date parsed wrong.
+
+---
+
 ## `vx_settlements.csv` — VIX futures daily settlements
 
 One row per listed contract per day. All listed monthly contracts, not just the
