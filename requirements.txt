@@ -1,6 +1,20 @@
-pandas>=2.0
-numpy>=1.24
-scipy>=1.10
-matplotlib>=3.7
-requests>=2.28
-# yfinance is only used to fetch SPX on the build machine; not needed if data/raw/spx.csv is present.
+# Pinned exactly. This model produces risk numbers; a silent behaviour change in a
+# dependency is a silent change in those numbers. Every run records the versions it
+# actually used in output/runs/<run-id>/manifest.json, so a number can be reproduced.
+#
+# Verified working set, 2026-09-19:
+pandas==2.3.3
+numpy==2.4.2
+scipy==1.17.1
+matplotlib==3.11.2
+requests==2.32.5
+
+# Optional, and only outside the daily pricing path:
+#   yfinance       fetches SPX during bootstrap_history.py / a recalibration refresh.
+#                  Not needed if data/raw/spx.csv is supplied. SPX is calibration-only --
+#                  the daily pricing path never reads it.
+#   pytest         to run tests/ (pytest==8.4.2 verified)
+#   jupyterlab     to run the notebooks in learning/Understanding the Model/
+#
+# To relax a pin, change it deliberately and re-run `python run.py` plus `pytest`,
+# then check the calibration parameters have not moved.

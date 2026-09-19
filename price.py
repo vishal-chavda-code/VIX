@@ -135,7 +135,9 @@ def main():
 
     # ---- price
     book = pd.read_csv(args.book) if args.book else None
-    asof, spot, curves, detail, summary = shock.run(book, args.asof, args.days_forward, save=True)
+    # save=False: the shared output/*.csv copies are fixed paths that two simultaneous
+    # runs would race on. Everything for this run goes to its own folder below instead.
+    asof, spot, curves, detail, summary = shock.run(book, args.asof, args.days_forward, save=False)
 
     say(f"\n  as of {asof.date()}   spot VIX {spot:.2f}   days forward {args.days_forward}")
     say("\nSHOCKED CM VIX CURVE")
@@ -181,7 +183,15 @@ def main():
         import shutil
         shutil.copy2(args.book, rundir / f"book_input{Path(args.book).suffix}")
 
+    import importlib.metadata as _md
+    def _ver(pkg):
+        try:
+            return _md.version(pkg)
+        except Exception:
+            return None
+
     manifest = {
+        "schema_version": 1,
         "run_id": run_id,
         "run_type": "price (frozen calibration, no refit)",
         "run_at": started.strftime("%Y-%m-%d %H:%M:%S"),
@@ -200,6 +210,8 @@ def main():
         "risk_free_rate": config.RISK_FREE_RATE,
         "gates": gates,
         "all_gates_pass": ok,
+        "environment": {"python": sys.version.split()[0],
+                        **{p: _ver(p) for p in ("pandas", "numpy", "scipy")}},
     }
     (rundir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
 

@@ -4,15 +4,20 @@ Audited 2026-09-19 against the code at that date. Each item was tested, not infe
 
 ## Verdict
 
-**Not production-ready as a hands-off system. Ready as a supervised analyst tool.**
+**All five blockers from the first audit are fixed.** Re-audited 2026-09-19 after the
+work; every claim below was re-tested.
 
-The maths is sound and validated. The pipeline shape is now right — calibration split
-from pricing, gates that fail loudly, full run provenance. What is missing is the
-engineering around it: there are **no tests**, and **book input validation is weak enough
-to silently produce wrong numbers** from a malformed file.
+The remaining items are hardening for a service deployment, not correctness problems.
+For a desk tool run by a person, or wired into an automated process with a human
+reviewing the verdict block, this is now sound.
 
-For a risk number a human reads, sanity-checks and signs off on: usable today.
-For a number that feeds an automated process unattended: not yet.
+| | first audit | now |
+|---|---|---|
+| test suite | none | **74 tests, 8.4s** |
+| book validation | 6 bad inputs silently accepted | **all rejected with row numbers** |
+| date parsing | pandas guessed the format | **strict ISO, ambiguous forms rejected** |
+| concurrent runs | raced on shared files | **each run writes only its own folder** |
+| dependencies | unpinned `>=` | **pinned exactly, recorded per run** |
 
 ---
 
@@ -30,9 +35,9 @@ For a number that feeds an automated process unattended: not yet.
 
 ---
 
-## BLOCKERS for unattended production
+## FIXED — what the first audit found (kept for the record)
 
-### 1. No test suite — the single biggest gap
+### 1. ~~No test suite~~ — FIXED
 
 There is no `tests/` directory and no test file anywhere. Every change to this model is
 verified by running it and eyeballing the report.
@@ -50,9 +55,22 @@ test_book.py          the premium > vol > ATM precedence; every rejection case b
 test_smoke.py         price.py end-to-end on book_TEMPLATE.csv, assert gates pass
 ```
 
-An afternoon's work. Without it, nobody can safely change this model.
+**Done.** `tests/` holds 74 tests running in 8.4 seconds:
 
-### 2. Book input validation silently accepts bad data
+```
+test_pricing.py      put-call parity to 1e-10, monotonicity, implied-vol round-trip,
+                     the far-OTM 4c case, the spot-vs-forward convention claim
+test_response.py     slope -1 at r=0 for every k, k=0 reduces to linear, saturation
+                     ceiling, tenor ordering, fitted params inside PARAM_RANGES
+test_book_input.py   one rejection test per bug this audit found, plus the full
+                     premium > vol > ATM precedence and type-whitespace handling
+test_smoke.py        both CLIs end to end, run-folder completeness, manifest
+                     provenance, determinism, and that every documented file exists
+```
+
+Run with `python -m pytest tests/ -q`.
+
+### 2. ~~Book input validation silently accepts bad data~~ — FIXED
 
 Tested with deliberately malformed books. **Four invalid inputs were accepted without
 error**, two of which produce wrong numbers rather than obvious garbage:
@@ -74,10 +92,12 @@ error**, two of which produce wrong numbers rather than obvious garbage:
 The `type` cases are the dangerous ones: a CSV export with a trailing space in the type
 column **flips every call to a put**, silently, and the run still reports ALL GATES PASS.
 
-**Fix:** a `validate_book()` function at the top of `reprice_book()` that checks types,
-signs and ranges, and raises with the offending row numbers. Half a day.
+**Done.** `vixshock/validate.py` runs at the top of `reprice_book()`. Every case above
+now raises `BookError` naming the CSV line numbers, except the three marked *warn*, which
+are suspicious rather than wrong. A leading space in `type` is stripped before validation,
+so the stray-space bug cannot flip a call to a put.
 
-### 3. Ambiguous dates parse silently wrong
+### 3. ~~Ambiguous dates parse silently wrong~~ — FIXED
 
 Every date column — the book's `expiry`, and both `date` and `contract_expiry` in
 `data/daily_inputs/vx_settlements.csv` — is passed to bare `pd.to_datetime()`, which
@@ -96,10 +116,12 @@ single column depending on the other rows, so the same value parses two ways in 
 Documented in `input/INPUT_CONTRACT.md` and `data/daily_inputs/README.md`, but
 documentation is not enforcement.
 
-**Fix:** parse with `format="%Y-%m-%d"` explicitly and raise on anything else, or validate
-that every parsed VIX expiry falls on a Wednesday. An hour.
+**Done.** `parse_expiry()` uses `format="%Y-%m-%d"` strictly; anything else raises with
+the offending values and an explanation of why the ambiguity is rejected rather than
+guessed. A parsed expiry that is not a Wednesday also warns, since VIX options always
+expire on one.
 
-### 4. Concurrent runs race on shared files
+### 4. ~~Concurrent runs race on shared files~~ — FIXED
 
 `shock.run(save=True)` writes to fixed paths in `output/` — `shocked_curves.csv`,
 `book_repricing_detail.csv`, `book_repricing_summary.csv` — in addition to the per-run
@@ -107,18 +129,18 @@ folder. Two simultaneous `price.py` runs would interleave writes there.
 
 The per-run folders are safe; only the shared copies collide.
 
-**Fix:** have `price.py` pass `save=False` and write only into its run folder, or drop
-the shared copies entirely. An hour.
+**Done.** `price.py` now calls `shock.run(..., save=False)` and writes only into its own
+`output/runs/<run-id>/` folder.
 
 ---
 
 ## SHOULD FIX before wider use
 
-### 5. Dependencies are unpinned
+### 5. ~~Dependencies are unpinned~~ — FIXED
 
-`requirements.txt` uses `>=` for everything. A future pandas or scipy release can change
-behaviour silently. For a model producing risk numbers, pin exact versions and record
-them in the run manifest.
+**Done.** Pinned exactly (pandas 2.3.3, numpy 2.4.2, scipy 1.17.1, matplotlib 3.11.2,
+requests 2.32.5), and every run records the versions it actually used under
+`environment` in its manifest.
 
 ### 6. `config.py` is global mutable state
 
@@ -133,10 +155,9 @@ Works fine for a CLI. Would need rework to run as a service.
 Warnings go to stdout via `logging.warning`. There is no log file, no severity routing,
 no run id in the log lines. Diagnosing a failed run means re-running it.
 
-### 8. No schema version on outputs
+### 8. ~~No schema version on outputs~~ — FIXED
 
-`manifest.json` has no `schema_version`. Anything parsing these files downstream will
-break silently when a field is renamed.
+**Done.** `manifest.json` carries `schema_version: 1`.
 
 ---
 
@@ -165,11 +186,25 @@ break silently when a field is renamed.
 
 ---
 
-## Priority
+## What is left
 
-1. **Book input validation** — half a day. Prevents silently wrong numbers.
-2. **Strict date parsing** — an hour. Same reason, and it affects market data too.
-3. **Smoke test + pricing tests** — an afternoon. Makes every future change safe.
-4. **Fix the concurrent-write race** — an hour.
-5. **Pin dependencies** — minutes.
-6. Logging, schema version, config injection — only if this becomes a service.
+Only two items, and neither is a correctness problem:
+
+1. **`config.py` is global mutable state** — fine for a CLI, would need injection to run
+   as a service or to price one book under two configurations in one process.
+2. **No logging discipline** — warnings go to stdout with no log file, severity routing
+   or run id in the line. Diagnosing a failed run means re-running it.
+
+Both are deployment-shape questions. Do them if this becomes a service; ignore them if it
+stays a desk tool.
+
+## Keeping it this way
+
+```
+python -m pytest tests/ -q
+```
+
+74 tests, 8.4 seconds. Run before any commit. The suite asserts *structure* — put-call
+parity, slope −1 at zero, the vol precedence, that documented files exist — rather than
+specific fitted values, so a legitimate recalibration does not break it while a genuine
+regression does.

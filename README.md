@@ -8,6 +8,7 @@ python price.py --book input/book_2026-09-21.csv   # the DAILY run: price a book
 python run.py --book input/book_2026-09-21.csv      # YEARLY: recalibrate + full validation
 python run.py --asof 2020-03-16    # curves as of a historical date
 python bootstrap_history.py        # ONE-TIME on a machine with internet: loads the 2004-now history
+python -m pytest tests/ -q         # 74 tests, ~8s.  Run before any commit.
 ```
 
 `run.py` prints the full diagnostics report to `output/report_<time>.txt`; read section 8 (VERDICT)

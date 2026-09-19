@@ -45,6 +45,7 @@ from .cm import load_cm
 from .data_sources import ROOT, load_cboe_index
 from .pricing import black76, implied_vol
 from .response import ResponseParams, load_params
+from .validate import BookError, validate_book
 
 log = logging.getLogger(__name__)
 
@@ -101,13 +102,12 @@ def shocked_curve_table(params: ResponseParams, vix_curve: Curve, shocks=config.
 def reprice_book(book: pd.DataFrame, params: ResponseParams, vov_params: ResponseParams,
                  vix_curve: Curve, vov_curve: Curve, asof: pd.Timestamp,
                  shocks=config.SHOCKS, days_forward: int = 0, r: float = config.RISK_FREE_RATE) -> pd.DataFrame:
-    b = book.copy()
-    b["expiry"] = pd.to_datetime(b["expiry"])
+    # Reject anything that would price to a wrong number rather than an obvious error:
+    # bad dates, non-positive strikes, unrecognised types, sentinel vols.  See validate.py.
+    b = validate_book(book, asof, days_forward, warn=lambda m: log.warning("%s", m))
     b["dte"] = (b["expiry"] - asof).dt.days
-    if (b["dte"] <= days_forward).any():
-        raise ValueError("book contains options expiring on or before the evaluation date")
     b["tenor"] = b["dte"] - days_forward
-    b["is_call"] = b["type"].str.upper().str.startswith("C")
+    b["is_call"] = b["type"].str.startswith("C")
     for col in ("forward", "vol", "premium"):
         if col not in b:
             b[col] = np.nan
