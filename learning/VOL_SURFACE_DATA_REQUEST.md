@@ -194,3 +194,69 @@ defensible first version while surface history is sorted out.
 
 Precedent: the VIX model itself ships with a free VVIX fallback for the vol-of-vol layer
 when the Bloomberg historical file is absent, and the cost is about 7%.
+
+---
+
+## If only ~2 years is available
+
+Measured against the last two years of SPX (2024-09-18 to 2026-09-18, 502 trading days):
+
+| pooled 1-20d windows | count |
+|---|---|
+| below −3% | 684 |
+| below −5% | 286 |
+| below −8% | 99 |
+| below −10% | 41 |
+| **below −15%** | **0** |
+| **below −20%** | **0** |
+
+Worst 20-day drawdown in the window: **−12.1%** (April 2025 tariffs).
+
+### What that supports, and what it does not
+
+**Usable:** a first-order shift rule for the −5% to −12% range, on 286 observations. That
+is the range run most often, and it is a real sample. It also establishes all the
+machinery — format, parsing, the join to SPX, the fitting code — which is reusable the
+moment more history arrives.
+
+**Not usable:** anything at −20% and below. The scenario grid runs to −40%, so a two-year
+fit would be extrapolating **four-fold beyond its worst observation**, and skew response is
+very unlikely to be linear — the existence of put skew is precisely the market saying the
+tail behaves differently from the body.
+
+**This is the failure the VIX model already documents.** Fitted on 1-day windows, which
+contain no −20% move, its convexity dial pinned at the bound and extrapolated to +52 at
+−20% against a pooled answer of +34. The fit did not fail loudly; it produced a confident
+wrong number because it had nothing in the tail to anchor on.
+
+### The better ask
+
+Not "ten years or nothing". Two requests, in order:
+
+**1. Take the two years now.** Build the machinery and calibrate the moderate range.
+
+**2. Ask separately for targeted backfill of the tail events** — far cheaper than a decade
+of everything, and it is where all the calibration information lives:
+
+| window | why it matters |
+|---|---|
+| Feb–Apr 2020 | COVID — the only −30% in modern history |
+| Feb 2018 | Volmageddon — the vol-structure event the VIX model already misses |
+| Q4 2018 | −20%, different character to a fast crash |
+| Jan–Oct 2022 | a slow grind down rather than a crash |
+| Aug 2024 | yen carry — the other documented VIX miss |
+
+Sixty days either side of each is roughly 600 extra days, a fraction of a full decade. If
+the existing fitter can be re-run over historical chains, this is a bounded job rather
+than a purchase.
+
+**The framing:** this is not a request for more data, it is a request for the *specific
+days that carry the information*. Calm days between events add almost nothing to a tail
+calibration.
+
+### If two years is all there ever is
+
+State the limitation the way the VIX model already states its own: **the SPX layer is
+calibrated for moderate shocks and is extrapolating beyond roughly −12%.** That is a
+defensible position. Calibrating on −12% data and quoting a −40% number without saying so
+is not.
