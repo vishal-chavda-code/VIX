@@ -13,7 +13,13 @@ Plain-language summary of the choices below:
   * The same formula serves VIX level (k > 0, accelerating) and vol-of-vol
     (k < 0, plateauing); the data picks the sign (K_BOUNDS).
 """
-TENORS = (30, 60, 90, 120)            # constant-maturity tenors, calendar days
+# Constant-maturity tenors, calendar days.  150 and 180 were added 2026-09-19: the listed
+# curve supports them (CM-150 buildable on 99.9% of days, CM-180 on 98.7%, minimum reach
+# ever 147 days), so the old 120 cap was a spec choice rather than a data limit.  Beyond
+# the last tenor the Curve extrapolates FLAT, which understates an upward-sloping curve --
+# so cover as much as the data honestly allows.  Back tenors are thinner: see README
+# limitation 4 on 2008 liquidity at the long end.
+TENORS = (30, 60, 90, 120, 150)
 # SPX return scenarios.  The spec grid is +-5..20%; -30% and -40% are added because the book must
 # hold up in the ugliest markets seen (2020: -34% in 23 days; 2008: -40% in 49 days).  Beyond -20%
 # the model is extrapolating past its calibration envelope (which ends near -30%) -- see the
