@@ -317,22 +317,55 @@ the SPX pull (bootstrap and optional daily refresh); nothing Bloomberg.
 ## 8. Layout
 
 ```
-run.py                  CALIBRATE + validate + price.  YEARLY.  writes output/report_<time>.txt
-price.py                PRICE ONLY vs the frozen calibration.  DAILY, ~1s.  writes output/pricing_<time>.txt
-bootstrap_history.py    one-time history download (internet), never called by run.py
+run.py                  CALIBRATE + validate + price.  YEARLY.  output/report_<time>.txt
+price.py                PRICE ONLY vs the frozen calibration.  DAILY, ~1s.
+bootstrap_history.py    one-time history download (needs internet); never called by the others
 config.py               every named parameter, sane ranges, gate thresholds
 QUESTIONS_FOR_QUANT.md  open decisions for the reviewer, with the numbers that raised them
+
 vixshock/
-  data_sources.py       history loaders + daily_inputs overlay; downloads (bootstrap / optional refresh)
-  ingest.py             step 1  contract files -> long table; ×10 rescale, placeholders, stale flag
-  cm.py                 step 2  constant-maturity stitch; liquidity / stale / anchor / gap flags; spot validation
-  join.py               step 3  SPX returns ⨝ CM changes; single-horizon and pooled 1-20d datasets
-  response.py           step 4  the response function, envelope fit, per-tenor and joint fits, plots
+  data_sources.py       history loaders + daily_inputs overlay; bootstrap / optional refresh
+  ingest.py             step 1  contract files -> long table; x10 rescale, placeholders, stale flag
+  cm.py                 step 2  constant-maturity stitch; liquidity / stale / anchor / gap flags
+  join.py               step 3  SPX returns joined to CM changes; pooled 1-20d windows
+  response.py           step 4  the response function, envelope fit, per-tenor and joint fits
   stress.py             step 5  stress-episode table
-  volofvol.py           step 6  vol-of-vol fit (same machinery, k < 0 allowed); reads data/bloomberg_historical/ or VVIX
-  pricing.py            Black-76
+  volofvol.py           step 6  vol-of-vol fit (same machinery, k < 0 allowed)
+  pricing.py            Black-76 and the implied-vol inverter
+  validate.py           book-input validation: strict ISO dates, strikes, types, sentinels
   shock.py              step 7  shock grid, continuous curve, book repricing
   diagnostics.py        step 8  the report and the gates
-data/raw                frozen history      data/daily_inputs   today's rows (local CSVs)     data/bloomberg_historical   frozen one-time file
-data/processed          rebuilt every run   output/             report, params, plots
+
+tests/                  74 tests, ~8s.  python -m pytest tests/ -q
+input/                  book files in.  INPUT_CONTRACT.md is the full spec for the feed builder
+learning/               how the model works, what is wrong with it, and what comes next
+
+data/raw                frozen history           data/daily_inputs        today's rows (local CSVs)
+data/bloomberg_historical  frozen one-time file  data/processed           rebuilt by run.py
+output/                 report_<t>.txt + params;  runs/<run-id>/  one folder per run, with a manifest
 ```
+
+## 9. Documentation map
+
+| | |
+|---|---|
+| `learning/Understanding the Model/` | six notebooks building the model from first principles |
+| `learning/FINDINGS.md` | what is wrong with it, with numbers |
+| `learning/PRODUCTION_READINESS.md` | audited engineering state |
+| `learning/ARCHITECTURE_GAPS.md` | the frozen-calibration design and why refit-on-every-run fails |
+| `learning/PORT_CHECKLIST.md` | work-machine runbook |
+| `learning/SPX_EXTENSION_PLAN.md` | adding SPX options: scope, blockers, sequencing |
+| `learning/VOL_SURFACE_DATA_REQUEST.md` | the data ask, written to hand over |
+| `input/INPUT_CONTRACT.md` | book-file spec: columns, ISO dates, premium over vol |
+| `data/daily_inputs/README.md` | market-data formats when there is no network |
+| `output/runs/README.md` | what a run folder contains, how to read a manifest |
+
+### Known open items
+
+- **No starting-level dependence** — the model adds fixed VIX points regardless of where
+  VIX starts. The main open question; Q1 for the reviewer.
+- **Flat extrapolation past the last tenor** — a 400-day option prices off the 150-day
+  forward, silently. Should warn or gate. (Tenors extended 120 to 150 on 2026-09-19;
+  180 was tried and rejected by the stress gate.)
+- **No contract multiplier** — P&L is index points x contracts, not currency. Harmless
+  for one product, blocking for a mixed SPX + VIX book.
