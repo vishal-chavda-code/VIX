@@ -11,6 +11,20 @@ Repo context: `Work/VIX` holds an SPX→VIX shock model that reprices a book of 
 options under SPX scenarios. A review found the book contains far out-of-the-money
 VIX calls the model effectively cannot see. Background: `learning/FINDINGS.md`.
 
+**Much of what this checklist used to ask you to do by hand is now in the code.**
+Current state:
+
+| | |
+|---|---|
+| `python price.py --book <file>` | prices a book in ~1s against the frozen calibration |
+| `python run.py` | recalibrates + full validation. **Yearly**, a reviewed event |
+| `input/INPUT_CONTRACT.md` | the complete spec for the book file — give this to whoever builds the feed |
+| `output/runs/<run-id>/` | one self-contained folder per pricing run, with a `manifest.json` recording exactly which calibration and market data produced the numbers |
+| `book_vols` gate | the run **FAILS** if any position lacks its own premium/vol, instead of silently marking far-OTM calls near zero |
+| premium → implied vol | done automatically; supply `premium`, leave `vol` blank |
+
+So Phases 1–4 below are mostly about *getting the data*, not about wiring it in.
+
 ---
 
 ## PHASE 0 — Before anything else (needs no market data)
@@ -77,42 +91,92 @@ no further, you still have something to present.
 
 ## PHASE 1 — Find implied vols
 
-### ☐ 1.1 — Inventory what you actually have
+### ☐ 1.1 — PREMIUM IS THE PREFERRED INPUT, NOT VOL
 
-Before hunting, write down every source on this machine that could give an
-implied vol or an option premium for a VIX option:
+**Read this before hunting. It reverses what you might assume.**
+
+The book CSV accepts both a `vol` column and a `premium` column. **Prefer the
+premium.** Reasons:
+
+1. **The premium is observable. A vol is derived** — someone had to pick a
+   forward, a day-count, a rate and a model to produce it. If their choices
+   differ from this model's, the vol is inconsistent with the pricer consuming it.
+2. **Backing the vol out of the premium guarantees consistency.** `implied_vol()`
+   uses this model's own forward, day-count, rate and Black-76. Round-trips exactly.
+
+**Measured cost of a convention mismatch** (90d 100-strike call, 4c premium):
+
+| convention used to derive the vol | implied vol | vs correct |
+|---|---|---|
+| this model (forward = VIX future, 91/365) | **126.92%** | — |
+| **if derived off SPOT VIX instead** | **133.80%** | **+6.87 pts** |
+| if 252 business days | 126.75% | −0.17 pts |
+| if r = 0 | 126.78% | −0.14 pts |
+| if expiry off by 2 days | 128.34% | +1.42 pts |
+
+Day-count and rate barely matter. **The forward is what matters** — and it is
+exactly the thing most likely to differ, because many systems quote VIX option
+vols against spot VIX, which is the wrong underlying for this product.
+
+Feeding the spot-derived vol into this model gives a price of **0.0636** against
+a market price of **0.0400** — a **59% mark error**, from a vol that is
+"correct" under its own convention.
+
+**⚠️ Do NOT populate both columns.** In `shock.py` the precedence is
+`vol` → `premium` → ATM curve. **If `vol` is present, `premium` is ignored
+entirely.** Populating both silently discards your authoritative premium.
+
+### ☐ 1.2 — Inventory what you actually have
+
+Write down every source on this machine that could give a **premium** or an
+implied vol for a VIX option:
 
 ```
-Source 1: ______________________  can it give per-strike IV? ____
-Source 2: ______________________  can it give per-strike IV? ____
-Source 3: ______________________  can it give per-strike IV? ____
+Source 1: ______________________  premium? ____  IV? ____
+Source 2: ______________________  premium? ____  IV? ____
+Source 3: ______________________  premium? ____  IV? ____
 ```
-
-What is needed, per position, is **either**:
-- market implied volatility as a decimal (1.27 = 127%), **or**
-- market premium per contract (from which vol is backed out in Phase 2)
 
 Order of preference:
-1. Per-strike, per-expiry IV directly from an option chain — best
-2. Market premiums per position — equally good, one extra step
-3. The desk's own risk-system marks — if the book is marked daily, that source
-   has vols
-4. `data/raw/bbg_vix_impvol.csv` in this repo — **at-the-money only.** NOT
-   sufficient for far-OTM strikes; that is the problem being investigated. Useful
-   solely as the ATM baseline to measure skew against.
+1. **Market premium per position** — best. Exact, convention-free.
+2. Per-strike, per-expiry IV from an option chain — acceptable, but carries the
+   source's conventions.
+3. The desk's own risk-system marks.
+4. `data/bloomberg_historical/vix_option_implied_vol.csv` — **at-the-money only**, a frozen
+   frozen one-time load. NOT sufficient for far-OTM strikes; that is the problem
+   being investigated. Useful only as the ATM baseline to measure skew against.
 
-### ☐ 1.2 — Pull vols or premiums for the flagged positions
+### ☐ 1.3 — Pull premiums for the flagged positions
 
-Start with the positions flagged in 0.2. If pulling the whole book is hard,
-**the flagged ones are what matter.**
+Start with the positions flagged in 0.2.
 
 ```
-Positions with IV or premium obtained:  ______ of ______
+Positions with a premium obtained:  ______ of ______
 ```
 
-### ☐ 1.3 — Record the ATM baseline
+### ☐ 1.4 — GET BOTH IF YOU CAN — as a cross-check, not an input
 
-From `data/raw/bbg_vix_impvol.csv` or report section 6, note the at-the-money
+If you can also get your source's implied vol, pull it into a **separate column
+or file** (not the book's `vol` column). Then compare it against the vol backed
+out of the premium:
+
+| gap | what it means |
+|---|---|
+| within ~1 vol point | your source shares this model's conventions — it can be trusted for positions where only a vol is available |
+| **~5–7 points high** | **your source is quoting off spot VIX.** A finding in itself — tell the desk |
+| wildly different | something else is wrong: stale mark, wrong expiry, wrong contract. Find out before relying on anything from it |
+
+This costs nothing extra if you are pulling both anyway, and it tells you whether
+the vol source is usable at all.
+
+```
+Median gap between source IV and premium-derived IV:  ______ vol points
+Verdict on the vol source:  ______________________
+```
+
+### ☐ 1.5 — Record the ATM baseline
+
+From `data/bloomberg_historical/vix_option_implied_vol.csv` or `run.py` report section 6, note the at-the-money
 vol at each tenor. The skew is the difference between a position's real vol and
 this baseline.
 
@@ -122,7 +186,10 @@ ATM vol 30d: ______  60d: ______  90d: ______
 
 ---
 
-## PHASE 2 — Back out vols from premiums (skip if 1.2 gave IVs directly)
+## PHASE 2 — Back out vols from premiums
+
+(The pipeline now does this automatically when you supply a `premium` column —
+see PHASE 4. Do it by hand here only if you want the numbers for the writeup.)
 
 The repo ships the inverter. No new maths.
 
@@ -213,7 +280,7 @@ versus **−5.28** skew-aware. Roughly one third of the true loss.
 
 ---
 
-## PHASE 4 — Apply the fix (no model change required)
+## PHASE 4 — Apply the fix (ALREADY IN THE CODE — just supply premiums)
 
 `vixshock/shock.py` falls back to the ATM curve only when the book's `vol` column
 is **missing or null**:
@@ -254,34 +321,61 @@ never go in the money in any modelled scenario.
 
 ---
 
-## PHASE 5 — Unrelated but worth doing: the freshness gate
+## PHASE 5 — Data freshness (FIXED — verify only)
 
-`run.py` only downloads new data when `data/raw/vx/` is **empty**:
+This was a real defect and it has been fixed. Both entry points now enforce a
+`data_fresh` gate that **FAILS the run** when the curve is older than
+`config.MAX_DATA_AGE_DAYS` (7 calendar days). It no longer passes silently.
 
-```python
-elif not data_sources.VX_DIR.exists() or not any(data_sources.VX_DIR.glob("*.csv")):
-    data_sources.download_everything()
-```
+`price.py` additionally enforces `calibration_fresh` — the fitted parameters must
+be no older than `config.MAX_CALIBRATION_AGE_DAYS` (400 days), backing the yearly
+recalibration policy.
 
-A plain `python run.py` weeks later silently prices off stale curves and still
-prints **ALL GATES PASS**. The only clue is the `as of` line in section 7.
-
-### ☐ 5.1 — Check how stale the current data is
+### ☐ 5.1 — Verify the gate fires on this machine
 
 ```
-"as of" date in report section 7:  ______
-Today:  ______
-Business days stale:  ______
+python price.py --book input/book_<date>.csv
 ```
 
-### ☐ 5.2 — Propose a gate
+Read the MARKET DATA block and the VERDICT:
 
-In `vixshock/diagnostics.py`, add a gate beside the existing ones — FAIL if the
-latest CM date is more than N business days behind today. Follow the pattern of
-`gates["cm_vs_spot"]` in `full_report()`. Suggested N = 3.
+```
+latest curve date ______   ______ days old   GATE data_fresh: ______
+calibration is ______ days old               GATE calibration_fresh: ______
+```
 
-Matters more here than on the build machine, because `--refresh` needs internet
-that may not exist.
+### ☐ 5.2 — If `data_fresh` FAILS
+
+The machine has no fresh curve. Either:
+- let the run pull it (needs internet to CBOE — no key or account), or
+- drop today's rows into `data/daily_inputs/` — see the README in that folder.
+  `vx_settlements.csv` needs **all** listed monthly contracts, not just the front:
+  the 120-day curve point needs the 4th–5th month.
+
+### ☐ 5.3 — If `calibration_fresh` FAILS
+
+Run `python run.py` to recalibrate — but treat it as a reviewed event, not a
+routine step. Keep the diagnostic report it produces. See README section 0b.
+
+---
+
+## PHASE 6 — Which way does the book lean?
+
+A one-line question with a large consequence. From the flagged far-OTM calls in
+Phase 0.2:
+
+```
+Net LONG or SHORT the far-OTM calls?  ______
+```
+
+- **Short** → the model **understates the liability**, at the base mark and in the
+  shock. This is the dangerous direction and the Feb-2018 failure mode: the thing
+  that hurts is the thing the model cannot see.
+- **Long** → the model **undervalues tail protection you are paying for**. Conservative
+  for P&L, but the hedge looks worthless in the risk report, and someone may cut it
+  on that basis.
+
+Either way the number is wrong; the sign tells you which conversation to have.
 
 ---
 

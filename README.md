@@ -4,36 +4,126 @@ One question: **if SPX moves by X%, where does the VIX futures curve go, and wha
 my VIX options worth then?**  Output feeds a portfolio risk measure.
 
 ```
-python run.py --book book.csv      # the DAILY run: today's data + recalibrate + validate + price the book
+python price.py --book input/book_2026-09-21.csv   # the DAILY run: price a book (~1s)
+python run.py --book book.csv      # YEARLY: recalibrate + full validation + price
 python run.py --asof 2020-03-16    # curves as of a historical date
 python bootstrap_history.py        # ONE-TIME on a machine with internet: loads the 2004-now history
 ```
 
-Every run prints the full diagnostics report and writes it to `output/report_<time>.txt`.
-Read section 8 (VERDICT) first. Exit code 0 only if every gate passed.
+`run.py` prints the full diagnostics report to `output/report_<time>.txt`; read section 8 (VERDICT)
+first. `price.py` writes a shorter `output/pricing_<time>.txt`. Exit code 0 only if every gate passed.
 Open questions for the reviewer are in `QUESTIONS_FOR_QUANT.md`.
 
-## 0. Running it daily — where the data comes from
+## 0. Where the data comes from
 
 | | source | needs |
 |---|---|---|
 | History 2004 → now | `data/raw/`, loaded once by `bootstrap_history.py`, then frozen | internet once (build machine) |
-| Today's rows, option A | CBOE public files + Yahoo SPX, pulled by `run.py` if `config.DAILY_REFRESH` and the network is there | **nothing** — no key, no account, no email; plain HTTPS |
+| Today's rows, option A | CBOE public files + Yahoo SPX, pulled by `run.py` (or `price.py --refresh`) if `config.DAILY_REFRESH` and the network is there | **nothing** — no key, no account, no email; plain HTTPS |
 | Today's rows, option B | `data/daily_inputs/` — three CSVs (VIX futures settles, SPX close, spot VIX) you or your feed maintain | nothing; see the README in that folder |
 | Vol-of-vol calibration | `data/bloomberg_historical/` — one frozen file, pulled once; **not a dependency**, see the README there | nothing; delete it and the run falls back to free VVIX |
-| Book | your CSV: `expiry, strike, type, quantity` + `vol` or `premium` per option | market vols or premiums from the desk |
+| Book | `input/book_<date>.csv`: `expiry, strike, type, quantity, premium` — full spec in `input/INPUT_CONTRACT.md` | market premiums (mid) from the desk |
 
 Neither option A nor B is a *dependency*: with no network the run continues on B and the
 disk; with nothing new at all the `data_fresh` gate **fails** once the curve is older than
 `config.MAX_DATA_AGE_DAYS` (7). A run that fails is the intended behaviour on stale data.
 
-Book file: give every position its own `vol` (decimal, 1.27 = 127%) or `premium` (the
-implied vol is backed out of it). Positions with neither fall back to the ATM curve and are
-listed in the report — that fallback marks far-out-of-the-money calls near zero, so do not
-ship a run with fallbacks on the real book.
+Book file: **supply a `premium` for every position if you can** — the mid of the bid/ask
+where available. Precedence is `premium` > `vol` > ATM curve. The premium is preferred
+because it is the observable: inverting it here guarantees the vol is consistent with this
+model's own forward, day-count, rate and Black-76, so the mark is exact by construction. An
+imported `vol` carries whoever produced it's conventions — one struck against spot VIX
+rather than the future runs ~7 vol points high at 90 days, a ~59% error in the price. Supply
+both and the premium wins, with any gap over 1 vol point logged. Positions with neither fall
+back to the ATM curve and are listed in the report — that fallback marks far-out-of-the-money
+calls near zero, so do not ship a run with fallbacks on the real book.
+
+Mid vs liquidation price: **mid is the more defensible input** for a shock model, because the
+output is a *change* in value and mid carries no assumption about which way you would trade.
+A bid/ask of 0.03/0.05 on a far-OTM call spans ~7 vol points, but only ±5% of the scenario
+P&L, so use mid where you have it and do not block on it where you do not — record which you
+used.
 
 Scenario grid: SPX −40% to +40% in 5% steps (`config.SHOCKS`). Beyond −30% the model is
 extrapolating past anything observed; see Q4 in `QUESTIONS_FOR_QUANT.md`.
+
+---
+
+## 0b. What is frozen and what is fresh
+
+The model is **ten numbers**. Everything in `data/raw/` exists to produce them; once they
+exist, pricing a book needs none of it. Keeping that line clear is what makes the model a
+reviewable object rather than something that re-derives itself on every run.
+
+| | what it is | refreshed |
+|---|---|---|
+| **Calibration inputs** | 22 years of SPX, VVIX and CM curve history | **yearly** (see below) |
+| **The ten fitted numbers** | `output/response_params.json`, `output/vov_params.json` | only by a recalibration |
+| **Pricing inputs** | today's VIX futures curve, spot VIX, vol-of-vol level | **every run** |
+| **Book inputs** | strikes, expiries, quantities, premiums | every run |
+
+The ten numbers: `beta_0`, `k`, `lam`, `beta_up_0`, `lam_up` for the VIX response, and the
+same five for vol-of-vol.
+
+**SPX is not a pricing input.** The SPX move is a *scenario you choose*, not something you
+observe — `shock.py` reads no SPX data at all. SPX is used only by `join.py`, `stress.py` and
+`volofvol.py`, which are calibration code. The same is true of the VVIX and Bloomberg
+historical files. This is why the Yahoo SPX pull sits outside the daily path: it is touched
+only during a recalibration, where a qualified vendor source can be substituted and frozen.
+
+### Recalibration policy: yearly
+
+Recalibrate **once a year**, or sooner on an explicit trigger. It is a reviewed event, never
+a side effect of pricing a book.
+
+Triggers for an off-cycle recalibration:
+
+- the run prints the post-2012 drift warning and the gap has widened materially
+- a stress episode occurs that the model would have understated — add it to `stress.EPISODES`
+  and re-validate
+- a structural change in the VIX futures market (new contract listings, a settlement change)
+
+Each recalibration should produce, and keep: the full diagnostic report, the stress table, the
+parameter files, and a note of the data vintage used.
+
+**Why yearly rather than on every run.** Refitting as a side effect of pricing means the risk
+number drifts for reasons unrelated to the book, two runs on the same book give different
+answers, nothing records which calibration produced which number, and — the decisive one —
+there is no fixed object for a validator to sign off on. The standard pattern is to calibrate
+on a schedule with review, then apply frozen parameters until the next one.
+
+### The two entry points
+
+```
+python run.py            CALIBRATE + validate + price.  Slow (minutes).
+                         Refits the response function and vol-of-vol from the full
+                         history, runs the 14 stress episodes, checks every gate,
+                         writes output/response_params.json + vov_params.json.
+                         Run YEARLY, or on a trigger, as a reviewed event.
+
+python price.py --book b.csv     PRICE ONLY, against the frozen calibration.  ~1 second.
+                         Loads the ten fitted numbers, applies them to today's curve,
+                         never refits.  Run daily, or whenever a new book arrives.
+```
+
+`price.py` prints the **calibration in force** at the top of every run — the fit window,
+observation count, method, quantile, the ten numbers, and when the parameter files were
+written — so every priced output records which calibration produced it.
+
+Its three gates:
+
+| gate | fails when |
+|---|---|
+| `calibration_fresh` | the fitted parameters are older than `config.MAX_CALIBRATION_AGE_DAYS` (400) |
+| `data_fresh` | the curve is older than `config.MAX_DATA_AGE_DAYS` (7) |
+| `book_vols` | any position fell back to the ATM curve instead of its own premium/vol |
+
+`book_vols` is the far-OTM protection: a book priced with ATM fallbacks marks
+out-of-the-money calls near zero, so the run fails rather than quietly understating them.
+
+Validation of the *calibration itself* — stress episodes, fit quality, parameter ranges —
+lives only in `run.py`. `price.py` deliberately does not re-run it; it reports which
+calibration it is using and leaves the validation to the run that produced it.
 
 ---
 
@@ -224,7 +314,8 @@ the SPX pull (bootstrap and optional daily refresh); nothing Bloomberg.
 ## 8. Layout
 
 ```
-run.py                  the daily entry point, writes output/report_<time>.txt, exit code = gates
+run.py                  CALIBRATE + validate + price.  YEARLY.  writes output/report_<time>.txt
+price.py                PRICE ONLY vs the frozen calibration.  DAILY, ~1s.  writes output/pricing_<time>.txt
 bootstrap_history.py    one-time history download (internet), never called by run.py
 config.py               every named parameter, sane ranges, gate thresholds
 QUESTIONS_FOR_QUANT.md  open decisions for the reviewer, with the numbers that raised them

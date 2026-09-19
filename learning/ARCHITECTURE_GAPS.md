@@ -237,3 +237,102 @@ can drop your own file there, so SPX is effectively solved already.
 
 Items 1, 2, 4 and 5 are each under an hour. Item 3 is the substantial one, and it
 is repackaging rather than new modelling.
+
+---
+
+# THE PROPOSAL — frozen calibration, fresh curve (added 2026-09-19)
+
+The current code refits the model on every run, including when you only want to
+price a book. That is the wrong shape. Here is the right one, and it is a
+repackaging job — every piece already exists.
+
+## The two kinds of data, which the code currently conflates
+
+| | what it is for | changes | source quality needed |
+|---|---|---|---|
+| **CALIBRATION** | producing the ten fitted numbers | rarely — quarterly at most | must be defensible; reviewed once |
+| **PRICING** | today's starting point | every day | must be current and trusted |
+
+## What the pricer ACTUALLY needs (verified by tracing the imports)
+
+`shock.py` — the thing that reprices a book — reads exactly four inputs:
+
+| input | fresh or frozen |
+|---|---|
+| `load_cm()` — today's CM VIX futures curve | **FRESH** |
+| `load_cboe_index("vix")` — spot VIX | **FRESH** |
+| `vov_levels.csv` — vol-of-vol level | **FRESH** (or superseded by book premiums) |
+| `load_params()` / `load_vov_params()` — the ten numbers | **FROZEN** |
+
+**`shock.py` reads no SPX data at all.** The SPX move is a *scenario you choose*,
+not an observation. SPX (`load_spx`) is called only by `join.py`, `stress.py` and
+`volofvol.py` — all calibration modules.
+
+**Consequence: Yahoo is not in the daily pricing path.** It supplies SPX, which is
+calibration-only. Under this architecture Yahoo is touched solely during a
+scheduled recalibration, where a qualified vendor source can be substituted once
+and frozen. This answers the "I don't like Yahoo" objection without changing any
+maths.
+
+## Why daily refitting is not defensible
+
+1. **Risk numbers drift for reasons unrelated to the book.** Refresh the data,
+   refit, and the ten numbers shift. Two runs on the same book days apart give
+   different answers.
+2. **No attribution.** You cannot tell whether a number moved because the book
+   changed or because the calibration did.
+3. **No reproducibility.** Nothing records which calibration priced which book.
+4. **It cannot be validated.** A model validator signs off on *a model*. If the
+   model re-derives itself on every run, there is no fixed object to sign off on.
+   This is the governance argument and it is the strongest one.
+
+The standard pattern on any risk desk: **calibrate on a schedule with review and
+sign-off, then apply frozen parameters until the next recalibration.**
+
+## The target shape
+
+```
+calibrate.py        run quarterly, or after a regime break, WITH REVIEW
+                    - needs the full history (SPX, VVIX, CM, contract files)
+                    - uses a qualified SPX source, not Yahoo
+                    - writes output/response_params.json + vov_params.json
+                      STAMPED with fit window, n_obs, data vintage, a version id
+                    - emits the full diagnostic report and the stress table
+                    - SLOW. That is correct and expected.
+
+price.py            run daily, or on demand per book
+                    - refreshes ONLY the VIX futures curve + spot VIX
+                    - loads the frozen parameters, never refits
+                    - FAILS if the curve is stale beyond MAX_DATA_AGE_DAYS
+                    - FAILS if no calibration file is present
+                    - stamps every output with the calibration version used
+                    - ~1 second
+```
+
+Measured today: repricing off saved params takes **0.90 seconds**; a full
+`run.py` takes several minutes.
+
+## What already exists and can be reused as-is
+
+- `load_params()` / `load_vov_params()` — the frozen-parameter loaders
+- `output/response_params.json` — already carries `fit_start`, `fit_end`, `n_obs`
+- `shock.data_age_days()` and the `data_fresh` gate
+- `data/daily_inputs/` — the no-network local input path
+- The whole of `shock.py` — it is already the fast path
+
+## What needs adding
+
+1. Split `diagnostics.full_report()` so the calibration steps (1–6) and the
+   pricing steps (7) can run independently.
+2. A calibration version stamp — a hash or timestamp written into the params
+   files and echoed on every priced output.
+3. A gate on `price.py`: refuse to run if the calibration is older than some
+   policy limit (for example 6 months), the mirror of the data-freshness gate.
+
+## Open question for the quant
+
+**How often should recalibration happen, and what triggers it?** Options:
+scheduled (quarterly), triggered (when the post-2012 drift warning fires), or on
+a regime break. The regime-instability finding — post-2012 beta_0 is 227 vs 192
+full-sample — is the argument for *more* frequent recalibration, but each one
+should be a reviewed event, not a silent side effect of pricing a book.
