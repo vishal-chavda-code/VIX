@@ -191,7 +191,7 @@ machine without the cache falls back to VVIX.
 
 Requirements that follow from the deployment environment:
 
-- **No API keys of any kind.** No Claude key, no vendor key. Everything must run
+- **No API keys of any kind.** No market-data key, no AI-assistant key. Everything must run
   from local files plus whatever market data the machine already provides.
 - **No internet assumed.** `--refresh` calls out to CBOE and Yahoo. On the work
   machine that will fail. The pipeline must work from data already on disk, and

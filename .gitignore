@@ -17,3 +17,23 @@ output/runs/*
 # Calibration runs are the record of which parameters were in force and when, so
 # they are committed.  Pricing runs (*_price) stay ignored: regenerable, and they
 # accumulate daily.
+
+# ---------------------------------------------------------------------------
+# AI-assistant tooling.  None of this belongs on the work machine: it is local
+# editor configuration, it is not needed to run or understand the model, and the
+# air-gapped machine has no assistant to use it.
+#
+# Note these were previously covered only by a GLOBAL gitignore on one machine,
+# which does not travel with the repo.  Repo-level rules so a fresh clone is safe.
+.claude/
+.cursor/
+.aider*
+.continue/
+.github/copilot-instructions.md
+CLAUDE.md
+AGENTS.md
+.mcp.json
+
+# Scratch / transcripts that occasionally land in a project directory
+*.claude-transcript
+.claude-*
