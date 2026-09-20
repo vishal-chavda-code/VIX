@@ -338,7 +338,6 @@ vixshock/
 
 tests/                  74 tests, ~8s.  python -m pytest tests/ -q
 input/                  book files in.  INPUT_CONTRACT.md is the full spec for the feed builder
-learning/               how the model works, what is wrong with it, and what comes next
 
 data/raw                frozen history           data/daily_inputs        today's rows (local CSVs)
 data/bloomberg_historical  frozen one-time file  data/processed           rebuilt by run.py
@@ -349,13 +348,6 @@ output/                 report_<t>.txt + params;  runs/<run-id>/  one folder per
 
 | | |
 |---|---|
-| `learning/Understanding the Model/` | six notebooks building the model from first principles |
-| `learning/FINDINGS.md` | what is wrong with it, with numbers |
-| `learning/PRODUCTION_READINESS.md` | audited engineering state |
-| `learning/ARCHITECTURE_GAPS.md` | the frozen-calibration design and why refit-on-every-run fails |
-| `learning/PORT_CHECKLIST.md` | work-machine runbook |
-| `learning/SPX_EXTENSION_PLAN.md` | adding SPX options: scope, blockers, sequencing |
-| `learning/VOL_SURFACE_DATA_REQUEST.md` | the data ask, written to hand over |
 | `input/INPUT_CONTRACT.md` | book-file spec: columns, ISO dates, premium over vol |
 | `data/daily_inputs/README.md` | market-data formats when there is no network |
 | `output/runs/README.md` | what a run folder contains, how to read a manifest |

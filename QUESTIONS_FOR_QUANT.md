@@ -10,12 +10,13 @@ ratio 1.67 across 14 stress episodes, every 2008 leg covered at 1.6–4.6×, COV
 at 1.2×, 94.6% of all historical sell-offs beyond 2% at or below the model.
 
 **Q1–Q8 concern the VIX model as it stands. Q9–Q12 concern adding SPX options**, which is
-scoped but not built — see `learning/SPX_EXTENSION_PLAN.md`. If time is short, Q1 is the
+scoped but not built (scoping notes held separately, available on request). If time is
+short, Q1 is the
 one that matters most, and Q9 is the one that unblocks everything else.
 
 Engineering state, for context: 74 tests, strict book-input validation, ISO-only dates,
 calibration separated from pricing, every run stamped with the parameters and market-data
-date that produced it. Assessed in `learning/PRODUCTION_READINESS.md`.
+date that produced it. A full engineering assessment is held separately.
 
 ---
 
@@ -150,8 +151,8 @@ gate: silent is worse than loud.
 
 # SPX EXTENSION — questions if we add SPX options
 
-Full scope in `learning/SPX_EXTENSION_PLAN.md`; the data ask is written up separately in
-`learning/VOL_SURFACE_DATA_REQUEST.md`.
+Full scope and the vol-surface data request are written up separately and available on
+request.
 
 The pricer itself is easy: SPX needs **no response function**, because the scenario *is*
 the underlying move, and Black-76 already takes a forward. The hard parts are data, the

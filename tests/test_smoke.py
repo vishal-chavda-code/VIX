@@ -98,9 +98,7 @@ def test_same_book_prices_identically_twice(repo, price_book):
 def test_documented_files_all_exist(repo):
     for f in ("README.md", "QUESTIONS_FOR_QUANT.md", "config.py",
               "input/INPUT_CONTRACT.md", "input/book_TEMPLATE.csv",
-              "data/daily_inputs/README.md", "output/runs/README.md",
-              "learning/README.md", "learning/FINDINGS.md",
-              "learning/Understanding the Model/README.md"):
+              "data/daily_inputs/README.md", "output/runs/README.md"):
         assert (repo / f).exists(), f"{f} is referenced by the docs but missing"
 
 

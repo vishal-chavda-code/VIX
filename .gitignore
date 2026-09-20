@@ -37,3 +37,8 @@ AGENTS.md
 # Scratch / transcripts that occasionally land in a project directory
 *.claude-transcript
 .claude-*
+
+# ---------------------------------------------------------------------------
+# learning/ -- notebooks and working documentation, kept local only.
+# Not imported by the pipeline; the model runs identically without it.
+learning/
