@@ -75,7 +75,10 @@ def build_vov_pool(wide: pd.DataFrame, tenors) -> pd.DataFrame:
 
 
 def fit_vov(pool: pd.DataFrame, tenors) -> ResponseParams:
-    params = fit_response(pool, tenors=tenors)
+    # Up branch stays least squares here.  UP_BRANCH_FIT is a decision about the VIX-level
+    # response (loss scenario: VIX falling in a rally); the vol-of-vol layer's conservative
+    # tail depends on the long/short VIX-call mix and has not been decided.  QUESTIONS_FOR_QUANT.
+    params = fit_response(pool, tenors=tenors, method_up="lsq")
     if len(tenors) == 1:
         # VVIX only: no information on tenor damping -> borrow the VIX response's lambda (ASSUMPTION)
         from .response import load_params

@@ -11,6 +11,7 @@ import io
 import pandas as pd
 import pytest
 
+from conftest import complete
 from vixshock.validate import BookError, validate_book
 
 
@@ -146,7 +147,7 @@ def test_non_wednesday_expiry_warns_but_prices(asof):
     d += pd.Timedelta(days=(3 - d.dayofweek) % 7 or 1)      # force a non-Wednesday
     msgs = []
     out = validate_book(
-        book(f"expiry,strike,type,quantity,premium\n{d:%Y-%m-%d},20,C,100,1.0\n"),
+        complete(book(f"expiry,strike,type,quantity,premium\n{d:%Y-%m-%d},20,C,100,1.0\n")),
         asof, warn=msgs.append)
     assert len(out) == 1
     if d.dayofweek != 2:
@@ -156,13 +157,13 @@ def test_non_wednesday_expiry_warns_but_prices(asof):
 def test_duplicate_rows_warn(asof, future_expiry):
     msgs = []
     row = f"{future_expiry},20,C,100,1.0"
-    validate_book(book(f"expiry,strike,type,quantity,premium\n{row}\n{row}\n"), asof, warn=msgs.append)
+    validate_book(complete(book(f"expiry,strike,type,quantity,premium\n{row}\n{row}\n")), asof, warn=msgs.append)
     assert any("share an expiry" in m for m in msgs)
 
 
 def test_percentage_vol_warns(asof, future_expiry):
     """127 instead of 1.27 is a plausible mistake and should be called out."""
     msgs = []
-    validate_book(book(f"expiry,strike,type,quantity,vol\n{future_expiry},20,C,100,127\n"),
+    validate_book(complete(book(f"expiry,strike,type,quantity,vol\n{future_expiry},20,C,100,127\n")),
                   asof, warn=msgs.append)
     assert any("DECIMAL" in m for m in msgs)

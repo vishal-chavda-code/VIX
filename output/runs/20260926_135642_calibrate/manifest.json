@@ -1,0 +1,67 @@
+{
+  "run_id": "20260926_135642_calibrate",
+  "run_type": "calibrate (refit from full history) + validate + price",
+  "run_at": "2026-09-26 13:56:42",
+  "asof": "latest",
+  "book_file": "(no book)",
+  "network_refresh": false,
+  "all_gates_pass": true,
+  "config": {
+    "tenors": [
+      30,
+      60,
+      90,
+      120,
+      150
+    ],
+    "shocks": [
+      -0.2,
+      -0.15,
+      -0.1,
+      -0.05,
+      0.05,
+      0.1,
+      0.15,
+      0.2
+    ],
+    "down_branch_fit": "envelope",
+    "envelope_quantile": 0.95,
+    "up_branch_fit": "envelope",
+    "up_envelope_quantile": 0.05,
+    "pool_max_horizon": 20,
+    "fit_start": "2004-01-01",
+    "vov_source": "auto",
+    "risk_free_rate": 0.04
+  },
+  "fitted_parameters": {
+    "vix_response": {
+      "beta_0": 197.51001290839739,
+      "k": 0.7585664107907342,
+      "lam": 0.20897428313970715,
+      "beta_up_0": 169.81822559191005,
+      "lam_up": 0.2767303767907761,
+      "fit_start": "2004-03-29",
+      "fit_end": "2026-09-18",
+      "n_obs": 112793,
+      "method_down": "envelope",
+      "quantile": 0.95,
+      "method_up": "envelope",
+      "quantile_up": 0.05
+    },
+    "vol_of_vol": {
+      "beta_0": 1203.2292627073537,
+      "k": -10.257051760372216,
+      "lam": 0.1812684721807158,
+      "beta_up_0": 301.51283648341325,
+      "lam_up": 0.3435643957510256,
+      "fit_start": "2006-04-25",
+      "fit_end": "2026-09-16",
+      "n_obs": 69419,
+      "method_down": "envelope",
+      "quantile": 0.95,
+      "method_up": "lsq",
+      "quantile_up": null
+    }
+  },
+  "note": "This is the calibration of record until the next one. Read report.txt section 8 (VERDICT) and section 5 (stress validation) before accepting it."
+}

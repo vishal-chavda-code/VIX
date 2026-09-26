@@ -27,9 +27,13 @@ def black76(F, K, T, sigma, r, is_call):
 
 
 def implied_vol(price, F, K, T, r, is_call, lo=1e-3, hi=5.0, tol=1e-8):
-    """Bisection; returns nan if the price is outside no-arbitrage bounds."""
+    """Bisection; returns nan if no vol in [lo, hi] reproduces the price: below the
+    no-arbitrage floor, or above what even vol = hi gives (the search used to return ~hi
+    silently in that case, and the base price then did not match the mark)."""
     intrinsic = max(F - K, 0.0) if is_call else max(K - F, 0.0)
     if price < intrinsic * np.exp(-r * T) - 1e-12:
+        return float("nan")
+    if float(black76(F, K, T, hi, r, is_call)) < price:
         return float("nan")
     for _ in range(200):
         mid = 0.5 * (lo + hi)

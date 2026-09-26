@@ -108,3 +108,111 @@ def test_calibration_is_not_stale_beyond_policy(params):
     import pandas as pd
     assert pd.Timestamp(params.fit_end) > pd.Timestamp("2024-01-01")
     assert params.n_obs > 50_000
+
+
+# ---------------------------------------------------------------- up-branch estimator (P0.1)
+def _synthetic(beta_lo=150.0, beta_mid=60.0, n=40_000, seed=0):
+    """Rallies whose VIX response has a known lower tail: y = -beta * r, beta drawn uniformly
+    from an interval centred on beta_mid whose top is beta_lo."""
+    rng = np.random.default_rng(seed)
+    r = rng.uniform(0.001, 0.12, n)
+    beta = rng.uniform(beta_mid - (beta_lo - beta_mid), beta_lo, n)    # centred on beta_mid, top at beta_lo
+    return r, -beta * r
+
+
+def test_up_envelope_recovers_the_lower_tail_slope():
+    """Per bucket the 5th percentile of -beta*r is -(beta's 95th pct)*r, so the fit through the
+    envelope must return beta's 95th percentile -- not its mean, which least squares returns."""
+    from vixshock.response import _fit_up_one
+    r, y = _synthetic()
+    b_env, env = _fit_up_one(r, y, "envelope", 0.05)
+    b_lsq, _ = _fit_up_one(r, y, "lsq")
+    assert b_lsq == pytest.approx(60.0, rel=0.02)
+    assert b_env == pytest.approx(60.0 + 0.9 * 90.0, rel=0.03)    # 95th pct of U(-30, 150) = 141
+    assert len(env) > 5
+
+
+def test_up_envelope_is_the_lower_tail_not_the_upper():
+    from vixshock.response import envelope_points
+    r, y = _synthetic()
+    env = envelope_points(r, y, 0.05, side="up")
+    assert (env["r_mean"] > 0).all()
+    assert (env["y_env"] < env["y_mean"]).all()          # below the average: the bigger VIX fall
+
+
+def test_up_branch_stays_linear_whatever_the_estimator(params):
+    """The estimator changes the points, never the shape: dVIX(+2r) == 2 * dVIX(+r)."""
+    for T in config.TENORS:
+        assert params.dvix(0.20, T) == pytest.approx(2 * params.dvix(0.10, T), rel=1e-12)
+
+
+def test_frozen_params_record_their_up_branch_estimator(params):
+    assert params.method_up in ("lsq", "envelope")
+    if params.method_up == "envelope":
+        assert params.quantile_up is not None and params.envelope_points_up
+
+
+@pytest.mark.parametrize("method_up,frozen", [
+    ("lsq", "tests/regression/response_params_pre_change.json"),     # the calibration before 2026-09-26
+    ("envelope", None),                                               # the calibration of record
+])
+def test_calibrations_reproduce_bit_for_bit(repo, pooled, method_up, frozen):
+    """Refitting on the same data with the same estimator gives the same ten numbers exactly.
+    Proves the up-branch change moved only the up branch, and that both calibrations are
+    reproducible.  Skips only if the data on disk has moved past the calibrated window."""
+    from vixshock.response import ResponseParams, calibration_of_record, fit_response
+    target = ResponseParams.from_json(repo / frozen if frozen else
+                                      calibration_of_record()[0] / "response_params.json")
+    p = fit_response(pooled, method_up=method_up)
+    if p.fit_end != target.fit_end:
+        pytest.skip("data on disk has moved past the calibrated window")
+    for k in ("beta_0", "k", "lam", "beta_up_0", "lam_up"):
+        assert getattr(p, k) == getattr(target, k), k
+
+
+def test_up_envelope_is_more_conservative_than_lsq_on_real_data(pooled):
+    """On the real pool the q=0.05 envelope must imply a bigger VIX fall than least squares,
+    and leave the down branch untouched."""
+    from vixshock.response import fit_response
+    pool = pooled
+    env, lsq = fit_response(pool, method_up="envelope", q_up=0.05), fit_response(pool, method_up="lsq")
+    assert env.beta_up_0 > lsq.beta_up_0
+    assert (env.beta_0, env.k, env.lam) == (lsq.beta_0, lsq.k, lsq.lam)
+    lo, hi = config.PARAM_RANGES["beta_up_0"]
+    assert lo <= env.beta_up_0 <= hi and lo <= lsq.beta_up_0 <= hi   # neither trips its own gate
+    assert env.per_tenor[30]["joint_coverage_up"] > 0.90 > lsq.per_tenor[30]["joint_coverage_up"]
+
+
+def test_vol_of_vol_up_branch_is_pinned_to_lsq():
+    """UP_BRANCH_FIT is scoped to the VIX-level response; the vol-of-vol fit must not follow it."""
+    import inspect
+    from vixshock import volofvol
+    assert 'method_up="lsq"' in inspect.getsource(volofvol.fit_vov)
+
+
+# ---------------------------------------------------------------- the calibration of record
+def test_pricing_uses_the_committed_calibration_not_the_working_copy(repo):
+    """output/response_params.json is gitignored: a fresh clone does not have it, and a machine
+    that once ran run.py has its own.  Pricing must read the committed run folder instead."""
+    import subprocess
+    from vixshock.response import calibration_of_record
+    folder, manifest = calibration_of_record()
+    assert folder.parent == repo / "output" / "runs" and manifest["all_gates_pass"] is True
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "output/runs/LATEST_CALIBRATION.txt"],
+                             cwd=repo, capture_output=True).returncode == 0
+    ignored = subprocess.run(["git", "check-ignore", "-q", "output/response_params.json"], cwd=repo).returncode == 0
+    assert tracked and ignored
+
+
+def test_a_failed_calibration_is_never_priced_with(tmp_path):
+    from vixshock.response import calibration_of_record
+    (tmp_path / "20990101_000000_calibrate").mkdir()
+    (tmp_path / "LATEST_CALIBRATION.txt").write_text("20990101_000000_calibrate\nFAIL\n")
+    with pytest.raises(RuntimeError, match="did not pass"):
+        calibration_of_record(tmp_path)
+
+
+def test_no_calibration_is_a_clear_error(tmp_path):
+    from vixshock.response import calibration_of_record
+    with pytest.raises(FileNotFoundError, match="LATEST_CALIBRATION"):
+        calibration_of_record(tmp_path)

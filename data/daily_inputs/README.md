@@ -1,14 +1,21 @@
 # Daily inputs — local files, no network
 
-`run.py` reads these three CSVs on top of the frozen history in `data/raw/`.
+`run.py` and `price.py` read these three CSVs on top of the frozen history in `data/raw/`.
 On a date that appears in both, the row here wins. Leave a file with only its
 header line if you have nothing to add. No API, no account, no key is involved.
 
-If `config.DAILY_REFRESH` is on and the machine has internet, the run first
-pulls the same numbers itself from CBOE's public files (and SPX from Yahoo);
-these files are then only needed for anything the pull could not get. If there
-is no internet, these files are the only source of today's data, and the run
-**fails** once the curve is older than `config.MAX_DATA_AGE_DAYS`.
+**Normally you need none of this.** Every run first downloads the same numbers itself from
+CBOE's public files, no key needed. These files are the fallback for a
+machine that cannot reach those sites, or for a day the download missed.
+
+**Add rows for the date of the book you are pricing.** `price.py` prices as of the date in
+the book's filename and **fails** (gate `curve_date`) unless the VIX futures, spot VIX and —
+if the book holds SPX options — the SPX close all have a row for exactly that date. There is
+no "close enough": a day-old curve reproduces the base price and puts the error in the shock.
+
+Rows added here reach the next `price.py` run directly: the VIX curve is rebuilt from
+`data/raw/` plus these files on every run (about a second). No `run.py` is needed, and none
+should be run for this — `run.py` recalibrates.
 
 ## ⚠️ DATE FORMAT — `YYYY-MM-DD` in every file, every date column
 
@@ -83,8 +90,11 @@ days before the third Friday of the following month). `volume` and
 
 ```
 date,close
-2026-09-18,7636.55
+2026-09-18,7650.50
 ```
+
+Needed for **pricing** whenever the book holds SPX options: the close on the pricing date is
+the base of every SPX forward. A VIX-only book does not need it to price; recalibration does.
 
 ## `vix_spot.csv` — spot VIX close
 

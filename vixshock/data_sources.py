@@ -18,7 +18,8 @@ VIX futures   CFE.  Two URL layouts:
                 2013-now   cdn.cboe.com/data/us/futures/market_statistics/historical_data/VX/VX_<expiry>.csv
               The modern path also serves 2013 but those files are truncated
               with zero settles, so the archive is used through Dec-2013.
-SPX           Yahoo (^GSPC) via yfinance, cached to CSV.
+SPX           history: Yahoo (^GSPC) via yfinance, once, at bootstrap.  New days: CBOE's
+              public SPX_History.csv, appended by refresh_daily (history never rewritten).
 VIX spot      cdn.cboe.com VIX_History.csv  (validation of CM-30 only).
 VVIX          cdn.cboe.com VVIX_History.csv (free 30-day vol-of-vol; used as the
               fallback when data/bloomberg_historical/ is absent).
@@ -45,6 +46,7 @@ ARCHIVE_URL = "https://cdn.cboe.com/resources/futures/archive/volume-and-price/C
 MODERN_URL = "https://cdn.cboe.com/data/us/futures/market_statistics/historical_data/VX/VX_{expiry:%Y-%m-%d}.csv"
 VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
 VVIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VVIX_History.csv"
+SPX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/SPX_History.csv"
 
 ARCHIVE_LAST_YEAR = 2013   # archive layout used for contracts expiring <= this year
 
@@ -163,6 +165,31 @@ def download_spx(force: bool = False, start: str = "2003-01-01") -> Path:
     return path
 
 
+def append_spx_from_cboe() -> int:
+    """New SPX closes from CBOE's public index file, APPENDED after the last date already in
+    data/raw/spx.csv.  Returns the number of days added.
+
+    The daily path uses this, not yfinance: same publisher as every other series, no scraper,
+    and the file holds completed days only (Yahoo returns today's intraday price as a "close"
+    during market hours).  Existing history is never rewritten: CBOE and the Yahoo-built
+    history differ by up to ~8 points on 42 days in 2005-06, and a data refresh must not move
+    the calibration's inputs."""
+    import io
+    path = RAW / "spx.csv"
+    hist = pd.read_csv(path, parse_dates=["date"])
+    r = requests.get(SPX_URL, headers=UA, timeout=30)
+    r.raise_for_status()
+    c = pd.read_csv(io.StringIO(r.text))
+    c.columns = [x.strip().upper() for x in c.columns]
+    c["date"] = pd.to_datetime(c["DATE"], format="%m/%d/%Y")
+    new = c[c["date"] > hist["date"].max()].sort_values("date")
+    if len(new):
+        with open(path, "a", newline="") as f:
+            for d, v in zip(new["date"], new["SPX"].astype(float)):
+                f.write(f"{d:%Y-%m-%d},{v}\r\n")
+    return int(len(new))
+
+
 DAILY = ROOT / "data" / "daily_inputs"
 
 
@@ -225,10 +252,10 @@ def load_daily_vx() -> pd.DataFrame | None:
 
 
 def refresh_daily() -> dict:
-    """OPTIONAL daily network pull (config.DAILY_REFRESH): every unexpired contract
-    file (expired ones never change), spot VIX, VVIX and SPX.  No key, no email,
-    no account: plain HTTPS to cdn.cboe.com and Yahoo.  Raises on any failure so
-    the caller can fall back to data/daily_inputs/."""
+    """Daily network pull (config.DAILY_REFRESH): every unexpired contract file (expired ones
+    never change), newly listed contracts, spot VIX, VVIX and new SPX closes.  No key, no
+    email, no account: plain HTTPS to cdn.cboe.com only.  Raises on any failure so the
+    caller can fall back to data/daily_inputs/."""
     import datetime as _dt
     today = _dt.date.today()
     n = 0
@@ -243,8 +270,9 @@ def refresh_daily() -> dict:
     download_vx_modern(first_year=today.year, force=False)      # newly listed contracts
     download_cboe_index(VIX_URL, "vix", force=True)
     download_cboe_index(VVIX_URL, "vvix", force=True)
-    download_spx(force=True)
-    return {"contract_files_refreshed": n, "latest_spx": str(load_spx().index.max().date()),
+    added = append_spx_from_cboe()
+    return {"contract_files_refreshed": n, "spx_days_added": added,
+            "latest_spx": str(load_spx().index.max().date()),
             "latest_vix": str(load_cboe_index("vix").index.max().date())}
 
 

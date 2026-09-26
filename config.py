@@ -2,9 +2,12 @@
 
 Plain-language summary of the choices below:
   * Tenors 30/60/90/120 days, interpolated linearly in calendar days.
-  * Down-move branch is fitted to the UPPER ENVELOPE of observed responses,
-    not the average (DOWN_BRANCH_FIT).  We calibrate to the worst observed
-    response because understating risk costs more than overstating it.
+  * Each branch of the response is fitted to the ENVELOPE that is conservative for
+    the book's exposure, not to the average.  Down branch: the upper envelope, the
+    biggest VIX rise seen for a drop of that size (DOWN_BRANCH_FIT).  Up branch: the
+    lower envelope, the biggest VIX fall seen for a rally of that size
+    (UP_BRANCH_FIT).  We calibrate to the bad tail because understating risk costs
+    more than overstating it -- and which tail is "bad" depends on the book.
   * Back-month contracts that trade thinly are flagged and counted on every
     run; they stay in the fit by default because they were shown not to be
     stale (FIT_EXCLUDE_FLAGGED).
@@ -20,11 +23,10 @@ Plain-language summary of the choices below:
 # so cover as much as the data honestly allows.  Back tenors are thinner: see README
 # limitation 4 on 2008 liquidity at the long end.
 TENORS = (30, 60, 90, 120, 150)
-# SPX return scenarios.  The spec grid is +-5..20%; -30% and -40% are added because the book must
-# hold up in the ugliest markets seen (2020: -34% in 23 days; 2008: -40% in 49 days).  Beyond -20%
-# the model is extrapolating past its calibration envelope (which ends near -30%) -- see the
-# open question on starting-level dependence in QUESTIONS_FOR_QUANT.md.
-SHOCKS = tuple(x / 100 for x in range(-40, 0, 5)) + tuple(x / 100 for x in range(5, 45, 5))   # -40..+40 in 5% steps
+# SPX return scenarios, +-5..20% in 5% steps.  Trimmed from -40..+40 on 2026-09-26: the book is
+# net long SPX puts, so the loss side is a rally, and beyond +20% every front-tenor answer is set
+# by VIX_FLOOR rather than by the model.  The 14 stress episodes (step 5) still run to -40%.
+SHOCKS = (-0.20, -0.15, -0.10, -0.05, 0.05, 0.10, 0.15, 0.20)
 
 # --- constant-maturity construction (step 2)
 CM_SPOT_ANCHOR = True     # when the front contract has > T days left, anchor the near end at (0, spot VIX)
@@ -40,6 +42,16 @@ POOL_MAX_HORIZON = 20
 HORIZON_DAYS = 1          # single-horizon dataset used for diagnostics / horizon comparison only
 DOWN_BRANCH_FIT = "envelope"   # "envelope" (upper envelope, conservative) | "lsq" (least squares, NOT for risk use)
 ENVELOPE_QUANTILE = 0.95       # envelope = this quantile of dVIX within each SPX-return bin; 1.0 = strict max
+# Up branch (rallies).  The book is net long SPX puts plus long and short VIX calls, so its
+# loss scenario is a RALLY with vol collapsing -- the live tail is the LOWER one: the biggest
+# VIX fall seen for a rally of that size.  If the book's direction ever flips (net short
+# vol into a rally), the conservative tail flips too: set UP_ENVELOPE_QUANTILE = 0.95.
+# The FORM stays linear whatever the estimator: only the points it is fitted through change.
+# LIVE since the 2026-09-26 calibration (output/runs/20260926_135642_calibrate/), which moved
+# exactly beta_up_0 68.3 -> 169.8 and lam_up 0.218 -> 0.277.  price.py warns if this setting
+# and the frozen parameters ever disagree.
+UP_BRANCH_FIT = "envelope"     # "envelope" (conservative for the book) | "lsq" (average; the pre-2026-09-26 fit)
+UP_ENVELOPE_QUANTILE = 0.05    # 0.05 = lower envelope (VIX falls hardest).  LIVE TAIL: lower
 K_BOUNDS = (-60.0, 5.0)        # k > 0 accelerating (VIX level), k < 0 saturating (vol-of-vol plateaus); the data picks
 ENVELOPE_BIN_WIDTH = 0.01      # SPX-return bin width for the envelope, 1% bins
 ENVELOPE_MIN_N = 5             # buckets with fewer windows than this are ignored (too noisy to define a worst case)
@@ -58,7 +70,9 @@ PARAM_RANGES = {
     "beta_0": (100.0, 400.0),  # VIX points per unit SPX return at the front (192 => -1% SPX -> +1.9 VIX)
     "k": (0.0, 5.0),           # downside convexity; above ~5 the -20% extrapolation explodes
     "lam": (0.05, 0.6),        # tenor damping per 30 days (0.20 => 120-day beta is 55% of the front)
-    "beta_up_0": (30.0, 150.0),
+    # Least squares gives ~68, the q=0.05 lower envelope ~170 (measured 2026-09-26 on the same
+    # data).  The range admits both so flipping UP_BRANCH_FIT does not trip its own gate.
+    "beta_up_0": (30.0, 300.0),
     "lam_up": (0.05, 0.6),
 }
 
@@ -82,10 +96,46 @@ PARAM_RANGES_VOV = {
 
 # --- option repricing (step 7)
 RISK_FREE_RATE = 0.04
-DAILY_REFRESH = True      # try the public CBOE / Yahoo files each run (no key, no account). If the network is
+
+# Products the book may hold, keyed by the feed's `issuer_name`.  Anything else FAILS the book --
+# there is no default.  The multiplier here is checked against the book's own `multiplier`
+# column, so a new product (XSP, mini-VIX) cannot price at the wrong size: it has to be added here.
+PRODUCTS = {
+    "VOLATILITY INDEX (VIX)": {"underlying": "VIX", "multiplier": 100},
+    "S&P 500 INDEX":          {"underlying": "SPX", "multiplier": 100},
+}
+
+# SPX forward = SPX close on the book date * exp((RISK_FREE_RATE - SPX_DIVIDEND_YIELD) * T).
+# Flat carry, no futures pipeline: measured 2026-09-26, a 0.5% forward error moves rally P&L on a
+# deep-OTM put by at most 2.3% (selloff side up to 7.8%), because the implied vol is inverted
+# from the same forward and the error largely cancels.  A carry that is off by 0.5%/yr stays
+# inside that test out to a year.  See README section on the SPX leg.
+SPX_DIVIDEND_YIELD = 0.013
+# SPX implied vol shock = SPX_VOL_SCALE * (the VIX response averaged over the futures spanning the
+# option's life, tenors 0..T-30) / 100 -- portfolio.spx_vol_shock.  Reuses the VIX response (VIX is
+# 30-day SPX implied vol).  1.0 is an ASSUMPTION for the reviewer to challenge: VIX is a
+# variance-swap level and runs above ATM vol, so the true scale may be below 1.
+SPX_VOL_SCALE = 1.0
+
+# Floors.  Each one can set the answer in a scenario, so every binding is reported per scenario
+# with the P&L it contributes -- none of these is allowed to act silently.
+#   VIX_FLOOR: shocked VIX forward never below this.  Just under the lowest spot VIX close ever
+#     (9.14, 2017-11-03).  Not 8.75: that was a contract's final settlement on its expiry morning
+#     -- spot VIX's opening print, not a traded futures level.  With even one day left no VIX
+#     future has settled below 9.88; with 30+ days, never below 11.32.  Confirmed 2026-09-26.
+#   VOL_FLOOR_VIX: VIX-option vols run 70-130%; this has never bound.
+#   VOL_FLOOR_SPX: PROPOSED, NEEDS REVIEW.  SPX ATM vol runs 10-13% in a calm tape; a rally shock
+#     of -10 vol points would clamp at a 20% floor and truncate the vol collapse that is this
+#     book's main loss.  5% is below any SPX implied vol on record (VIX low 9.14).
+VIX_FLOOR = 9.0
+VOL_FLOOR_VIX = 0.20
+VOL_FLOOR_SPX = 0.05
+DAILY_REFRESH = True      # try the public CBOE files each run (no key, no account). If the network is
                           # absent the run continues on data/daily_inputs/ + disk, so this is never a dependency.
 MAX_CALIBRATION_AGE_DAYS = 400   # price.py FAILS if the fitted parameters are older than this.  Policy is a
                                  # YEARLY recalibration as a reviewed event (400 = a year plus slack for
                                  # scheduling); recalibrate sooner on a trigger -- see README section 0b.
-MAX_DATA_AGE_DAYS = 7     # FAIL the run if the latest curve date is older than this (calendar days) when
-                          # pricing as of today.  Raise it deliberately if the machine cannot refresh data.
+# There is no data-age allowance: price.py prices AS OF THE DATE IN THE BOOK FILENAME and FAILS
+# unless the market data has a row for exactly that date (gate curve_date).  Pricing Monday's
+# marks off Friday's forwards passes silently otherwise -- the vol inverted from the premium
+# absorbs the mismatch, the base mark still reproduces, and only the shocked number is wrong.

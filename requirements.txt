@@ -10,9 +10,10 @@ matplotlib==3.11.2
 requests==2.32.5
 
 # Optional, and only outside the daily pricing path:
-#   yfinance       fetches SPX during bootstrap_history.py / a recalibration refresh.
-#                  Not needed if data/raw/spx.csv is supplied. SPX is calibration-only --
-#                  the daily pricing path never reads it.
+#   yfinance       fetches the SPX HISTORY once, in bootstrap_history.py. Not needed if
+#                  data/raw/spx.csv is supplied. The daily path does not use it: new SPX
+#                  closes come from CBOE's public index file (vixshock/data_sources.py,
+#                  append_spx_from_cboe), with requests, which is pinned above.
 #   pytest         to run tests/ (pytest==8.4.2 verified)
 #   jupyterlab     to run the notebooks in learning/Understanding the Model/
 #

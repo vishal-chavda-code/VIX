@@ -41,7 +41,7 @@ def section(title: str) -> str:
 
 def full_report(book: pd.DataFrame | None = None, asof=None, days_forward: int = 0) -> tuple[str, bool]:
     """Runs every step from the raw data and returns (report text, all gates passed)."""
-    from . import ingest, cm, join, response, stress, volofvol, shock
+    from . import ingest, cm, join, response, stress, volofvol, shock, portfolio
     pd.set_option("display.width", 250)
     pd.set_option("display.max_columns", 40)
     buf = io.StringIO()
@@ -50,7 +50,8 @@ def full_report(book: pd.DataFrame | None = None, asof=None, days_forward: int =
     with redirect_stdout(buf):
         print(f"SPX -> VIX shock model   run {dt.datetime.now():%Y-%m-%d %H:%M}")
         print(f"config: tenors {config.TENORS}  shocks {config.SHOCKS}  pool 1-{config.POOL_MAX_HORIZON}d  "
-              f"down-branch fit {config.DOWN_BRANCH_FIT} q={config.ENVELOPE_QUANTILE}  fit start {config.FIT_START}  "
+              f"down-branch fit {config.DOWN_BRANCH_FIT} q={config.ENVELOPE_QUANTILE}  "
+              f"up-branch fit {config.UP_BRANCH_FIT} q={config.UP_ENVELOPE_QUANTILE}  fit start {config.FIT_START}  "
               f"exclude flagged {config.FIT_EXCLUDE_FLAGGED}  vol-of-vol source {config.VOV_SOURCE}")
 
         # ---------------- step 1
@@ -99,13 +100,13 @@ def full_report(book: pd.DataFrame | None = None, asof=None, days_forward: int =
         warnings += probs
         gates["params_in_range"] = not probs
         print("\n".join(probs) if probs else "  all parameters inside PARAM_RANGES")
-        print("\n  fit quality per tenor / branch (down = envelope, up = least squares):")
+        print(f"\n  fit quality per tenor / branch (down = {params.method_down}, up = {params.method_up}):")
         print(response.fit_table(params).T.to_string())
         print("\n  model dVIX (points) at the scenario grid:")
         grid = pd.DataFrame({f"T{T}": [params.dvix(s, T) for s in config.SHOCKS] for T in config.TENORS},
                             index=[f"{s:+.0%}" for s in config.SHOCKS]).round(1)
         print(grid.T.to_string())
-        print("\n  envelope vs least squares (section 3 of the spec -- why the average fit is not used):")
+        print("\n  envelope vs least squares, both branches (why the average fit is not used):")
         print(response.lsq_comparison(params).to_string())
         print("\n  horizon comparison (fixed windows extrapolate; the pooled fit is the calibration):")
         print(response.horizon_comparison().to_string())
@@ -155,28 +156,45 @@ def full_report(book: pd.DataFrame | None = None, asof=None, days_forward: int =
 
         # ---------------- step 7
         print(section("7. SHOCK GRID AND BOOK REPRICING"))
-        last, age = shock.data_age_days(asof)
-        gates["data_fresh"] = asof is not None or age <= config.MAX_DATA_AGE_DAYS
-        print(f"  latest curve date {last.date()}, {age} days old   GATE data_fresh: "
-              f"{'PASS' if gates['data_fresh'] else 'FAIL'}  (limit {config.MAX_DATA_AGE_DAYS} days"
-              f"{'; historical --asof, not checked' if asof is not None else ''})")
-        asof_, spot_v, curves, det, summary = shock.run(book, asof, days_forward)
-        print(f"  as of {asof_.date()}   spot VIX {spot_v:.2f}   days forward {days_forward}")
+        market = shock.load_market(asof)
+        print(f"  as of {market.asof.date()}   spot VIX {market.spot_vix:.2f}   days forward {days_forward}")
+        curves = shock.shocked_curve_table(params, market.vix_curve)
+        curves.to_csv(ROOT / "output" / "shocked_curves.csv")
         print("\n  shocked CM VIX curve:")
         print(curves.to_string())
-        floored = int((curves.iloc[1:] <= shock.VIX_FLOOR).sum().sum())
+        floored = int((curves.iloc[1:] <= config.VIX_FLOOR).sum().sum())
         if floored:
-            print(f"  note: {floored} cell(s) hit the VIX_FLOOR of {shock.VIX_FLOOR} (linear up-branch extrapolated below "
-                  f"any level VIX futures have traded)")
-        base = det[det["scenario"] == det["scenario"].iloc[0]][["expiry", "strike", "type", "qty", "tenor", "fwd", "vol", "vol_source", "base_price"]]
-        print(f"\n  book ({'supplied' if book is not None else 'EXAMPLE -- supply the real book'}):")
-        print(base.round(3).to_string(index=False))
-        nfb = int(base["vol_source"].str.contains("fallback|intrinsic").sum())
-        if nfb:
-            warnings.append(f"!!! {nfb} of {len(base)} positions priced without their own vol/premium "
-                            f"(see vol_source); far-out-of-the-money options are understated")
-        print("\n  book P&L by scenario; vol_of_vol_effect is what holding implied vol fixed would have missed:")
-        print(summary.to_string())
+            print(f"  note: {floored} cell(s) hit the VIX_FLOOR of {config.VIX_FLOOR} (the linear up branch "
+                  f"extrapolated below the lowest VIX ever printed)")
+        if book is None:
+            print("\n  no book supplied -- pass --book to price one against this calibration")
+        else:
+            gaps = market.gaps(need_spx=True)
+            gates["curve_date"] = not gaps
+            print(f"\n  GATE curve_date: {'PASS' if not gaps else 'FAIL'}  (every series from {market.asof.date()})"
+                  + (f"  !!! {'; '.join(gaps)}" if gaps else ""))
+            if not gaps:
+                det = portfolio.price_portfolio(book, params, vparams, market, days_forward=days_forward)
+                unfloored = portfolio.price_portfolio(book, params, vparams, market, days_forward=days_forward,
+                                                      floors=portfolio.NO_FLOORS, warn=lambda m: None)
+                summary = portfolio.summarize(det)
+                det.to_csv(ROOT / "output" / "book_repricing_detail.csv", index=False)
+                summary.to_csv(ROOT / "output" / "book_repricing_summary.csv")
+                base = det[det["scenario"] == det["scenario"].iloc[0]].set_index("cusip")[
+                    ["underlying", "expiry", "type", "strike", "quantity", "tenor", "forward", "forward_source",
+                     "vol", "vol_source", "base_price"]]
+                print("\n  book:")
+                print(base.round(4).to_string())
+                for srcs, what in ((portfolio.VOL_FALLBACKS, "vol"), ((portfolio.CURVE_FALLBACK,), "forward")):
+                    col = "vol_source" if what == "vol" else "forward_source"
+                    n = int(base[col].isin(srcs).sum())
+                    if n:
+                        warnings.append(f"!!! {n} of {len(base)} positions priced without their own {what} "
+                                        f"(see {col}); price.py fails this book")
+                print("\n  floors (non-zero floor_effect = P&L set by a constant, not the model):")
+                print(portfolio.floor_report(det, unfloored).to_string())
+                print("\n  book P&L by scenario, currency; vol_of_vol_effect is what holding implied vol fixed would miss:")
+                print(summary.to_string())
 
         # ---------------- verdict
         print(section("8. VERDICT"))
